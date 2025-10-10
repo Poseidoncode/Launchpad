@@ -67,6 +67,7 @@ function createAppItem(app) {
     name: app.name,
     path: app.path,
     icon: app.icon,
+    iconLoaded: false,
   };
 }
 
@@ -116,8 +117,18 @@ function render() {
       const iconWrapper = document.createElement("div");
       iconWrapper.className = "app-icon";
       const img = document.createElement("img");
-      img.src = item.icon;
       img.alt = item.name;
+      if (item.iconLoaded) {
+        img.src = item.icon;
+      } else {
+        // Placeholder or loading state
+        img.src = "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiBmaWxsPSIjRjNGNEY2Ii8+Cjx0ZXh0IHg9IjMyIiB5PSIzMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZHk9Ii4zNWVtIiBmaWxsPSIjOUI5QkE0IiBmb250LXNpemU9IjEyIj5BcHA8L3RleHQ+Cjwvc3ZnPg==";
+        // Load icon asynchronously
+        setTimeout(() => {
+          img.src = item.icon;
+          item.iconLoaded = true;
+        }, 0);
+      }
       iconWrapper.appendChild(img);
       tile.appendChild(iconWrapper);
       const label = document.createElement("div");

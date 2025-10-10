@@ -12,8 +12,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tauri::async_runtime::spawn_blocking;
 use walkdir::WalkDir;
+use dirs;
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, serde::Deserialize, Clone)]
 struct AppInfo {
     name: String,
     path: String,
@@ -22,9 +23,18 @@ struct AppInfo {
 
 #[tauri::command]
 async fn get_installed_apps() -> Result<Vec<AppInfo>, String> {
-    spawn_blocking(scan_apps)
-        .await
-        .map_err(|_| String::from("failed to collect applications"))?
+    spawn_blocking(|| {
+        let cache_path = get_cache_path();
+        if let Some(cached) = load_cache(&cache_path) {
+            Ok(cached)
+        } else {
+            let apps = scan_apps()?;
+            save_cache(&cache_path, &apps);
+            Ok(apps)
+        }
+    })
+    .await
+    .map_err(|_| String::from("failed to collect applications"))?
 }
 
 #[tauri::command]
@@ -202,7 +212,18 @@ fn read_icon_png(path: &Path) -> Option<String> {
     let icon_type = family
         .available_icons()
         .into_iter()
-        .max_by_key(|ty| ty.pixel_width() * ty.pixel_height())?;
+        .filter(|ty| {
+            let size = ty.pixel_width();
+            size >= 64 && size <= 256 // Prefer medium sizes
+        })
+        .max_by_key(|ty| ty.pixel_width() * ty.pixel_height())
+        .or_else(|| {
+            // Fallback to largest if no medium size
+            family
+                .available_icons()
+                .into_iter()
+                .max_by_key(|ty| ty.pixel_width() * ty.pixel_height())
+        })?;
     let image = family.get_icon_with_type(icon_type).ok()?;
     let mut data = Vec::new();
     image.write_png(&mut data).ok()?;
@@ -241,6 +262,24 @@ fn start_app(path: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(String::from("open command returned error"))
+    }
+}
+
+fn get_cache_path() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("tauri-app-cache.json")
+}
+
+fn load_cache(path: &Path) -> Option<Vec<AppInfo>> {
+    let file = File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    serde_json::from_reader(reader).ok()
+}
+
+fn save_cache(path: &Path, apps: &[AppInfo]) {
+    if let Ok(json) = serde_json::to_string_pretty(apps) {
+        let _ = std::fs::write(path, json);
     }
 }
 
