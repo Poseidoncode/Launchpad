@@ -1,5 +1,7 @@
 # 🚀 Launchpad
 
+English | [繁體中文](./README.zh-TW.md)
+
 A modern macOS application launcher built with SwiftUI and TCA (The Composable Architecture). Inspired by macOS Launchpad and LaunchOS.
 
 ![macOS](https://img.shields.io/badge/macOS-14.0+-blue.svg)
@@ -11,41 +13,11 @@ A modern macOS application launcher built with SwiftUI and TCA (The Composable A
 - **📊 Application Grid** - Beautiful grid layout displaying all your applications
 - **🔍 Instant Search** - Quickly find apps by name
 - **📁 Smart Folders** - Organize apps into custom folders with drag-and-drop
-- **🔄 Drag & Drop** - Rearrange apps and create folders by dragging
-- **📂 Multi-Directory Scanning** - Scans `/Applications`, `/System/Applications`, `~/Applications`, and more
-- **💾 Persistent Storage** - Folders and arrangements are saved automatically
-- **🎨 Native UI** - Blends seamlessly with macOS using native blur effects
-- **⌨️ Keyboard Shortcuts** - ESC to clear search, context menu support
-
-## 📸 Screenshots
-
-### Main Grid View
-```
-┌─────────────────────────────────────────────┐
-│  🔍 Search...                               │
-├─────────────────────────────────────────────┤
-│  ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐      │
-│  │ 📁│ │ 📱│ │ 📱│ │ 📱│ │ 📱│ │ 📱│      │
-│  │Uti│ │Saf│ │Mai│ │Cal│ │Not│ │Pho│      │
-│  └───┘ └───┘ └───┘ └───┘ └───┘ └───┘      │
-│  ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐      │
-│  │ 📱│ │ 📱│ │ 📱│ │ 📱│ │ 📱│ │ 📱│      │
-│  │Map│ │Mus│ │TV │ │New│ │Sto│ │Pre│      │
-│  └───┘ └───┘ └───┘ └───┘ └───┘ └───┘      │
-└─────────────────────────────────────────────┘
-```
-
-### Folder View
-```
-┌─────────────────────────────────────────────┐
-│  ← Utilities                      ✏️ 🗑️    │
-├─────────────────────────────────────────────┤
-│  ┌───┐ ┌───┐ ┌───┐ ┌───┐                   │
-│  │ 📱│ │ 📱│ │ 📱│ │ 📱│                   │
-│  │Cal│ │Ter│ │Act│ │Dic│                   │
-│  └───┘ └───┘ └───┘ └───┘                   │
-└─────────────────────────────────────────────┘
-```
+- **🔄 Intuitive Drag & Drop** - Rearrange apps and create folders by dragging
+- **📂 Multi-Path Scanning** - Automatically scans `/Applications`, `/System/Applications`, `~/Applications`, and more
+- **💾 Automatic Persistence** - Folders and arrangements are saved automatically without manual steps
+- **🎨 Native UI** - Blends seamlessly with macOS using native blur effects (Vibrant styling)
+- **⌨️ Keyboard Shortcuts** - `ESC` to clear search or exit folders, context menu support
 
 ## 🛠 Installation
 
@@ -53,76 +25,76 @@ A modern macOS application launcher built with SwiftUI and TCA (The Composable A
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/Launchpad.git
+git clone https://github.com/Poseidoncode/Launchpad.git
 cd Launchpad
 
-# Build and install
+# Build and install to Applications folder
 ./install.sh
 ```
 
 ### Manual Install
 
 ```bash
-# Build the app
+# Build the app binary
 ./build-app.sh
 
-# Copy to Applications
+# Copy or move to Applications
 cp -r build/Launchpad.app /Applications/
 ```
 
-### Run from Source
+### Run for Developers
 
 ```bash
-# Build and run
+# Build and run via Swift CLI
 swift build
 .build/debug/Launchpad
 
-# Or open in Xcode
+# Or open in Xcode for debugging
 open Package.swift
 ```
 
-## 📖 Usage
+## 📖 Usage Guide
 
 ### Basic Operations
 
-| Action | How To |
-|--------|--------|
-| Launch App | Click on the app icon |
-| Search Apps | Type in the search bar |
-| Clear Search | Press `ESC` key |
-| Refresh Apps | Click refresh button in toolbar |
+| Action       | How To                           |
+| ------------ | -------------------------------- |
+| Launch App   | Click on the app icon            |
+| Search Apps  | Type in the search bar instantly |
+| Clear Search | Press the `ESC` key              |
+| Refresh Apps | Click refresh button in toolbar  |
 
 ### Folder Management
 
-| Action | How To |
-|--------|--------|
-| Create Folder | Drag one app onto another app |
-| Create Empty Folder | Click folder+ button in toolbar |
-| Add App to Folder | Drag app onto a folder |
-| Open Folder | Click on the folder |
-| Rename Folder | Open folder → Click pencil icon |
+| Action                 | How To                               |
+| ---------------------- | ------------------------------------ |
+| Create Folder          | Drag one app onto another app        |
+| Create Empty Folder    | Click folder+ button in toolbar      |
+| Add App to Folder      | Drag an app onto an existing folder  |
+| Open Folder            | Click on the folder icon             |
+| Rename Folder          | Open folder → Click pencil icon      |
 | Remove App from Folder | Right-click app → Remove from Folder |
-| Delete Folder | Right-click folder → Delete Folder |
-| Exit Folder | Press `ESC` or click back button |
+| Delete Folder          | Right-click folder → Delete Folder   |
+| Exit Folder            | Press `ESC` or click the back button |
 
 ### Edit Mode
 
 Click the `⇅` button in the toolbar to enter edit mode:
 
-- Drag apps to rearrange them
-- Drag apps onto each other to create folders
+- Drag apps to rearrange their position
+- Drag apps onto each other to create new folders
 - Drag apps onto folders to add them
-- Click the checkmark button to exit edit mode
+- Click the checkmark button to exit edit mode and save
 
 ### Keyboard Shortcuts
 
-| Shortcut | Action |
-|----------|--------|
-| `ESC` | Clear search / Exit folder |
-| `Cmd+F` | Open search window |
-| `Cmd+,` | Open settings |
+| Shortcut  | Action                     |
+| --------- | -------------------------- |
+| `ESC`     | Clear search / Exit folder |
+| `Cmd + F` | Open search window         |
+| `Cmd + ,` | Open settings              |
 
-## 🏗 Architecture
+## 🏗 Architecture Overview
 
 ```
 Launchpad/
@@ -130,8 +102,8 @@ Launchpad/
 │   └── LaunchpadApp.swift          # App entry point
 ├── Features/
 │   ├── AppGrid/
-│   │   ├── AppGridFeature.swift    # TCA feature (state management)
-│   │   └── AppGridView.swift       # SwiftUI views
+│   │   ├── AppGridFeature.swift    # TCA Feature (state management)
+│   │   └── AppGridView.swift       # SwiftUI Views
 │   ├── Search/
 │   │   ├── SearchFeature.swift
 │   │   └── SearchView.swift
@@ -139,12 +111,12 @@ Launchpad/
 │       ├── SettingsFeature.swift
 │       └── SettingsView.swift
 ├── Models/
-│   ├── AppItem.swift               # App model
-│   ├── Folder.swift                # Folder model
-│   └── UserPreferences.swift       # Settings model
+│   ├── AppItem.swift               # Application data model
+│   ├── Folder.swift                # Folder structure model
+│   └── UserPreferences.swift       # Settings persistence model
 ├── Services/
-│   ├── AppScanner.swift            # Scan installed apps
-│   └── FileSearcher.swift          # Spotlight file search
+│   ├── AppScanner.swift            # Scanning system applications
+│   └── FileSearcher.swift          # Spotlight API integration
 └── Shared/
     └── Extensions/
 ```
@@ -152,52 +124,37 @@ Launchpad/
 ## 🔧 Tech Stack
 
 - **SwiftUI** - Declarative UI framework
-- **TCA (The Composable Architecture)** - State management
-- **Combine** - Reactive programming
-- **FileManager** - File system operations
-- **Spotlight API** - File search
-- **NSWorkspace** - App launching
+- **TCA (The Composable Architecture)** - Robust and testable state management
+- **Combine** - Reactive events handling
+- **FileManager** - System file operations
+- **Spotlight API** - High-performance file indexing
+- **NSWorkspace** - Application lifecycle and launching
 
 ## 🧪 Testing
 
 ```bash
-# Run all tests
+# Run all unit and integration tests
 swift test
 
-# Run specific test
+# Run specific test target
 swift test --filter LaunchpadTests
 ```
-
-### Test Coverage
-
-- Unit tests for TCA reducers
-- App scanner tests
-- Folder management tests
-- User preferences tests
-- E2E workflow tests
 
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
 1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+2. Open a Pull Request
 
 ## 📝 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+Copyright (c) 2024 Poseidoncode. Licensed under [CC BY 4.0](./LICENSE).
 
 ## 🙏 Acknowledgments
 
 - Inspired by [LaunchOS](https://launchosapp.com/)
-- Built with [Point-Free's TCA](https://github.com/pointfreeco/swift-composable-architecture)
-
-## 📮 Feedback
-
-If you have any feedback or suggestions, please open an issue on GitHub.
+- Built with [Point-Free's TCA framework](https://github.com/pointfreeco/swift-composable-architecture)
 
 ---
 
