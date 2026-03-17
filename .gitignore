@@ -11,9 +11,10 @@
 build/
 DerivedData/
 *.build/
-
+*.build2/
 # Swift Package Manager
 .build/
+.build2/
 .swiftpm/
 Package.resolved
 
