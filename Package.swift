@@ -18,7 +18,7 @@ let package = Package(
             dependencies: [
                 .product(name: "ComposableArchitecture", package: "swift-composable-architecture")
             ],
-            path: "Launchpad"
+            path: "src"
         ),
         .testTarget(
             name: "LaunchpadTests",
@@ -26,7 +26,7 @@ let package = Package(
                 "Launchpad",
                 .product(name: "ComposableArchitecture", package: "swift-composable-architecture")
             ],
-            path: "LaunchpadTests"
+            path: "tests"
         )
     ]
 )
