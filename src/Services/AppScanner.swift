@@ -11,7 +11,17 @@ actor AppScanner {
         URL(fileURLWithPath: "/System/Applications/Utilities")
     ]
     
-    func scanApps() async -> [AppItem] {
+    private var cachedApps: [AppItem] = []
+    private var lastScanTime: Date?
+    private let cacheValidDuration: TimeInterval = 300
+    
+    func scanApps(forceRefresh: Bool = false) async -> [AppItem] {
+        if !forceRefresh, let lastScan = lastScanTime, 
+           Date().timeIntervalSince(lastScan) < cacheValidDuration,
+           !cachedApps.isEmpty {
+            return cachedApps
+        }
+        
         var apps: [AppItem] = []
         let fileManager = FileManager.default
         
@@ -30,7 +40,10 @@ actor AppScanner {
             }
         }
         
-        return apps.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        let sorted = apps.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        cachedApps = sorted
+        lastScanTime = Date()
+        return sorted
     }
     
     private func makeAppItem(from url: URL) -> AppItem? {
@@ -39,7 +52,7 @@ actor AppScanner {
             ?? bundle?.infoDictionary?["CFBundleName"] as? String
             ?? url.deletingPathExtension().lastPathComponent
         let bundleID = bundle?.bundleIdentifier ?? url.path
-        let icon = NSWorkspace.shared.icon(forFile: url.path)
+        let icon = IconCache.shared.icon(for: url.path)
         
         return AppItem(
             id: AppItem.stableID(bundleIdentifier: bundleID, path: url),

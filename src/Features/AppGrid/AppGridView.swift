@@ -13,33 +13,6 @@ struct AppGridView: View {
         Array(repeating: GridItem(.flexible(), spacing: 8), count: 13)
     }
     
-    var displayedApps: [AppItem] {
-        let query = store.searchQuery.lowercased()
-        let apps = query.isEmpty ? store.apps : store.apps.filter { 
-            $0.name.lowercased().contains(query) 
-        }
-        
-        // Apply custom names first
-        var result = apps.map { app -> AppItem in
-            if let customName = store.preferences.customAppNames[app.bundleIdentifier] {
-                var modifiedApp = app
-                modifiedApp.name = customName
-                return modifiedApp
-            }
-            return app
-        }
-        
-        // Sort by appOrder (always use the stored order regardless of search)
-        result.sort {
-            let i1 = store.appOrder.firstIndex(of: $0.id) ?? Int.max
-            let i2 = store.appOrder.firstIndex(of: $1.id) ?? Int.max
-            return i1 < i2
-        }
-        
-        return result
-    }
-    
-    // Computed property to sync with store
     private var isFolderOpen: Binding<Bool> {
         Binding(
             get: { store.openFolderID != nil },
@@ -147,7 +120,7 @@ struct AppGridView: View {
                                 )
                             }
                             // Apps - Adding explicit ID to ensure proper view updates when order changes
-                            ForEach(displayedApps, id: \.id) { app in
+                            ForEach(store.displayedApps, id: \.id) { app in
                                 AppGridItem(
                                     app: app,
                                     isEditMode: store.isEditMode,

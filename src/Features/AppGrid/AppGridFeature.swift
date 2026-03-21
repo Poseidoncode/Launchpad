@@ -14,6 +14,37 @@ struct AppGridFeature {
         var searchQuery: String = ""
         var openFolderID: UUID? = nil
         var preferences: UserPreferences = .default
+        
+        private(set) var displayedApps: [AppItem] = []
+        private var orderIndexMap: [UUID: Int] = [:]
+        
+        mutating func updateDisplayedApps() {
+            let query = searchQuery.lowercased()
+            let filtered = query.isEmpty ? apps : apps.filter { 
+                $0.name.lowercased().contains(query) 
+            }
+            
+            var result = filtered.map { app -> AppItem in
+                if let customName = preferences.customAppNames[app.bundleIdentifier] {
+                    var modifiedApp = app
+                    modifiedApp.name = customName
+                    return modifiedApp
+                }
+                return app
+            }
+            
+            result.sort { app1, app2 in
+                let i1 = orderIndexMap[app1.id] ?? Int.max
+                let i2 = orderIndexMap[app2.id] ?? Int.max
+                return i1 < i2
+            }
+            
+            displayedApps = result
+        }
+        
+        mutating func rebuildOrderIndexMap() {
+            orderIndexMap = Dictionary(uniqueKeysWithValues: appOrder.enumerated().map { ($0.element, $0.offset) })
+        }
     }
     
     enum Action {
@@ -43,6 +74,7 @@ struct AppGridFeature {
                 state.preferences = PreferencesStore.load()
                 state.folders = state.preferences.folders
                 state.appOrder = state.preferences.appOrder
+                state.rebuildOrderIndexMap()
                 return .run { send in
                     let apps = await AppScanner.shared.scanApps()
                     await send(.appsLoaded(apps))
@@ -59,9 +91,12 @@ struct AppGridFeature {
                 
                 if normalizedOrder != state.appOrder {
                     state.appOrder = normalizedOrder
+                    state.rebuildOrderIndexMap()
+                    state.updateDisplayedApps()
                     return .send(.savePreferences)
                 }
                 
+                state.updateDisplayedApps()
                 return .none
                 
             case let .launchApp(app):
@@ -73,20 +108,20 @@ struct AppGridFeature {
                 return .none
                 
             case let .swapApps(id, withID):
-                // Ensure both IDs exist in the appOrder array before swapping
                 guard let i1 = state.appOrder.firstIndex(of: id),
                       let i2 = state.appOrder.firstIndex(of: withID),
-                      i1 != i2 else { // Avoid unnecessary swaps
-                    return .none
+                      i1 != i2 else { 
+                    return .none 
                 }
                 
                 state.appOrder.swapAt(i1, i2)
-                
-                // Return a sequence of actions: save preferences and potentially trigger UI refresh
+                state.rebuildOrderIndexMap()
+                state.updateDisplayedApps()
                 return .send(.savePreferences)
                 
             case let .setSearchQuery(query):
                 state.searchQuery = query
+                state.updateDisplayedApps()
                 return .none
                 
             case let .openFolder(id):
@@ -131,6 +166,7 @@ struct AppGridFeature {
                 
             case let .renameApp(bundleIdentifier, newName):
                 state.preferences.customAppNames[bundleIdentifier] = newName
+                state.updateDisplayedApps()
                 return .send(.savePreferences)
                 
             case .savePreferences:
@@ -148,7 +184,7 @@ struct AppGridFeature {
             case .reloadApps:
                 state.isLoading = true
                 return .run { send in
-                    let apps = await AppScanner.shared.scanApps()
+                    let apps = await AppScanner.shared.scanApps(forceRefresh: true)
                     await send(.appsLoaded(apps))
                 }
             }
