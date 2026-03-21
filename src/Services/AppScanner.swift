@@ -42,6 +42,7 @@ actor AppScanner {
         let icon = NSWorkspace.shared.icon(forFile: url.path)
         
         return AppItem(
+            id: AppItem.stableID(bundleIdentifier: bundleID, path: url),
             name: name,
             bundleIdentifier: bundleID,
             path: url,

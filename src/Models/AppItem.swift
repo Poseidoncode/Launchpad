@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import CryptoKit
 
 struct AppItem: Identifiable, Equatable, Codable {
     let id: UUID
@@ -55,5 +56,18 @@ struct AppItem: Identifiable, Equatable, Codable {
     
     static func == (lhs: AppItem, rhs: AppItem) -> Bool {
         lhs.id == rhs.id
+    }
+    
+    static func stableID(bundleIdentifier: String, path: URL) -> UUID {
+        let source = "\(bundleIdentifier)\n\(path.path)"
+        let digest = SHA256.hash(data: Data(source.utf8))
+        let bytes = Array(digest.prefix(16))
+        
+        return UUID(uuid: (
+            bytes[0], bytes[1], bytes[2], bytes[3],
+            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11],
+            bytes[12], bytes[13], bytes[14], bytes[15]
+        ))
     }
 }

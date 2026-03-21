@@ -26,7 +26,8 @@ let package = Package(
                 "Launchpad",
                 .product(name: "ComposableArchitecture", package: "swift-composable-architecture")
             ],
-            path: "tests"
+            path: "tests",
+            exclude: ["E2ETest.md"]
         )
     ]
 )

@@ -51,9 +51,17 @@ struct AppGridFeature {
             case let .appsLoaded(apps):
                 state.isLoading = false
                 state.apps = apps
-                if state.appOrder.isEmpty {
-                    state.appOrder = apps.map(\.id)
+                
+                let currentIDs = Set(apps.map(\.id))
+                let orderedExistingIDs = state.appOrder.filter { currentIDs.contains($0) }
+                let missingIDs = apps.map(\.id).filter { !orderedExistingIDs.contains($0) }
+                let normalizedOrder = orderedExistingIDs + missingIDs
+                
+                if normalizedOrder != state.appOrder {
+                    state.appOrder = normalizedOrder
+                    return .send(.savePreferences)
                 }
+                
                 return .none
                 
             case let .launchApp(app):
@@ -65,9 +73,16 @@ struct AppGridFeature {
                 return .none
                 
             case let .swapApps(id, withID):
+                // Ensure both IDs exist in the appOrder array before swapping
                 guard let i1 = state.appOrder.firstIndex(of: id),
-                      let i2 = state.appOrder.firstIndex(of: withID) else { return .none }
+                      let i2 = state.appOrder.firstIndex(of: withID),
+                      i1 != i2 else { // Avoid unnecessary swaps
+                    return .none
+                }
+                
                 state.appOrder.swapAt(i1, i2)
+                
+                // Return a sequence of actions: save preferences and potentially trigger UI refresh
                 return .send(.savePreferences)
                 
             case let .setSearchQuery(query):

@@ -19,7 +19,7 @@ struct AppGridView: View {
             $0.name.lowercased().contains(query) 
         }
         
-        // Apply custom names
+        // Apply custom names first
         var result = apps.map { app -> AppItem in
             if let customName = store.preferences.customAppNames[app.bundleIdentifier] {
                 var modifiedApp = app
@@ -29,7 +29,7 @@ struct AppGridView: View {
             return app
         }
         
-        // Sort by appOrder
+        // Sort by appOrder (always use the stored order regardless of search)
         result.sort {
             let i1 = store.appOrder.firstIndex(of: $0.id) ?? Int.max
             let i2 = store.appOrder.firstIndex(of: $1.id) ?? Int.max
@@ -146,13 +146,14 @@ struct AppGridView: View {
                                     isEditMode: store.isEditMode
                                 )
                             }
-                            // Apps
-                            ForEach(displayedApps) { app in
+                            // Apps - Adding explicit ID to ensure proper view updates when order changes
+                            ForEach(displayedApps, id: \.id) { app in
                                 AppGridItem(
                                     app: app,
                                     isEditMode: store.isEditMode,
                                     isDragging: draggingApp?.id == app.id,
                                     isDropTarget: dropTargetApp?.id == app.id,
+                                    hasActiveDrag: draggingApp != nil,
                                     store: store,
                                     onDragStart: {
                                         draggingApp = app
@@ -222,6 +223,7 @@ struct AppGridItem: View {
     let isEditMode: Bool
     let isDragging: Bool
     let isDropTarget: Bool
+    let hasActiveDrag: Bool
     let store: StoreOf<AppGridFeature>
     var onDragStart: () -> Void
     var onDragEnd: () -> Void
@@ -237,7 +239,7 @@ struct AppGridItem: View {
         VStack(spacing: 5) {
             ZStack {
                 // Drop target indicator
-                if isDropTarget && isDragging {
+                if isDropTarget && hasActiveDrag {
                     RoundedRectangle(cornerRadius: 14)
                         .stroke(Color.accentColor, lineWidth: 3)
                         .frame(width: 66, height: 66)
@@ -325,18 +327,26 @@ struct AppGridItem: View {
             .clipShape(RoundedRectangle(cornerRadius: 12))
         }
         // Drop support
-        .onDrop(of: [UTType.text], isTargeted: nil) { providers in
+        .onDrop(of: [UTType.text], isTargeted: Binding(
+            get: { isDropTarget },
+            set: { newValue in
+                if newValue {
+                    onDropEnter()
+                } else {
+                    onDropExit()
+                }
+            }
+        )) { providers in
             guard let provider = providers.first else { return false }
             
-            provider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { data, _ in
+            provider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { item, _ in
                 DispatchQueue.main.async {
                     defer { 
                         onDragEnd()
                         isDraggingLocal = false
                     }
                     
-                    guard let data = data as? Data,
-                          let draggedIDStr = String(data: data, encoding: .utf8),
+                    guard let draggedIDStr = draggedIDString(from: item),
                           let draggedID = UUID(uuidString: draggedIDStr),
                           draggedID != app.id else { return }
                     
@@ -373,6 +383,22 @@ struct AppGridItem: View {
             .padding()
             .frame(width: 280)
         }
+    }
+    
+    private func draggedIDString(from item: NSSecureCoding?) -> String? {
+        if let data = item as? Data {
+            return String(data: data, encoding: .utf8)
+        }
+        
+        if let string = item as? String {
+            return string
+        }
+        
+        if let nsString = item as? NSString {
+            return nsString as String
+        }
+        
+        return nil
     }
 }
 
