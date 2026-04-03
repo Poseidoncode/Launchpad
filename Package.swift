@@ -18,7 +18,8 @@ let package = Package(
             dependencies: [
                 .product(name: "ComposableArchitecture", package: "swift-composable-architecture")
             ],
-            path: "src"
+            path: "src",
+            exclude: ["asset/icon.png"]
         ),
         .testTarget(
             name: "LaunchpadTests",
@@ -27,7 +28,15 @@ let package = Package(
                 .product(name: "ComposableArchitecture", package: "swift-composable-architecture")
             ],
             path: "tests",
-            exclude: ["E2ETest.md", "e2e-test.applescript", "LaunchpadUITests.swift"]
+            exclude: [
+                "E2ETest.md",
+                "e2e-test.applescript",
+                "LaunchpadUITests.swift",
+                "run-e2e-test.sh",
+                "test-launch.sh",
+                "ManualTestChecklist.md",
+                "FINAL_TEST_REPORT.md"
+            ]
         )
     ]
 )
