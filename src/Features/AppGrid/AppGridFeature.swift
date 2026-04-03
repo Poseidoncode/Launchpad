@@ -74,6 +74,7 @@ struct AppGridFeature {
         case launchApp(AppItem)
         case toggleEditMode
         case swapApps(id: UUID, with: UUID)
+        case moveApp(id: UUID, after: UUID)
         case setSearchQuery(String)
         case openFolder(UUID)
         case closeFolder
@@ -153,6 +154,32 @@ struct AppGridFeature {
                 }
                 
                 state.appOrder.swapAt(i1, i2)
+                state.rebuildOrderIndexMap()
+                state.updateDisplayedApps()
+                return .send(.savePreferences)
+
+            case let .moveApp(id, after: targetID):
+                guard let fromIndex = state.appOrder.firstIndex(of: id),
+                      state.appOrder.contains(targetID),
+                      id != targetID else {
+                    return .none
+                }
+
+                var updatedOrder = state.appOrder
+                updatedOrder.remove(at: fromIndex)
+
+                guard let adjustedTargetIndex = updatedOrder.firstIndex(of: targetID) else {
+                    return .none
+                }
+
+                let insertionIndex = adjustedTargetIndex + 1
+                updatedOrder.insert(id, at: insertionIndex)
+
+                if updatedOrder == state.appOrder {
+                    return .none
+                }
+
+                state.appOrder = updatedOrder
                 state.rebuildOrderIndexMap()
                 state.updateDisplayedApps()
                 return .send(.savePreferences)

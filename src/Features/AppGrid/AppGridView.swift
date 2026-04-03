@@ -13,17 +13,6 @@ struct AppGridView: View {
         Array(repeating: GridItem(.flexible(), spacing: 8), count: 13)
     }
     
-    private var isFolderOpen: Binding<Bool> {
-        Binding(
-            get: { store.openFolderID != nil },
-            set: { newValue in
-                if !newValue {
-                    store.send(.closeFolder)
-                }
-            }
-        )
-    }
-    
     var body: some View {
         ZStack(alignment: .bottom) {
             // Full window vibrancy background
@@ -175,17 +164,24 @@ struct AppGridView: View {
             if !store.searchQuery.isEmpty { store.send(.setSearchQuery("")); return .handled }
             return .ignored
         }
-        .sheet(item: Binding(
-            get: { store.openFolderID.flatMap { id in store.folders.first(where: { $0.id == id }) } },
-            set: { newValue in
-                if newValue == nil {
-                    store.send(.closeFolder)
+        .overlay {
+            if let folderID = store.openFolderID {
+                ZStack {
+                    Color.black
+                        .opacity(0.32)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            store.send(.closeFolder)
+                        }
+                    
+                    FolderDetailView(folderID: folderID, store: store)
+                        .id(folderID)
+                        .padding(32)
+                        .transition(.opacity.combined(with: .scale(scale: 0.98)))
                 }
             }
-        )) { folder in
-            FolderDetailView(folderID: folder.id, store: store)
-                .id(folder.id)
         }
+        .animation(.easeOut(duration: 0.16), value: store.openFolderID)
     }
 }
 
@@ -323,8 +319,8 @@ struct AppGridItem: View {
                           let draggedID = UUID(uuidString: draggedIDStr),
                           draggedID != app.id else { return }
                     
-                    // Swap apps
-                    store.send(.swapApps(id: draggedID, with: app.id))
+                    // Insert the dragged app after the drop target instead of swapping.
+                    store.send(.moveApp(id: draggedID, after: app.id))
                 }
             }
             return true
@@ -494,9 +490,8 @@ struct FolderDetailView: View {
     
     @State private var isEditingName = false
     @State private var editedName = ""
-    @Environment(\.dismiss) private var dismiss
     
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 8)
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 6)
     
     private var folder: Folder? {
         store.folders.first(where: { $0.id == folderID })
@@ -522,7 +517,7 @@ struct FolderDetailView: View {
                 VStack(spacing: 0) {
                     // Header
                     HStack {
-                        Button(action: { dismiss() }) {
+                        Button(action: { store.send(.closeFolder) }) {
                             HStack(spacing: 4) {
                                 Image(systemName: "xmark")
                                     .fontWeight(.semibold)
@@ -576,8 +571,8 @@ struct FolderDetailView: View {
                         
                         Spacer()
                     }
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 16)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 14)
                     
                     Divider()
                         .background(.white.opacity(0.2))
@@ -595,8 +590,8 @@ struct FolderDetailView: View {
                                     .font(.system(size: 12))
                                     .foregroundStyle(.white.opacity(0.5))
                             }
-                            .frame(maxWidth: .infinity, minHeight: 280)
-                            .padding(.horizontal, 24)
+                            .frame(maxWidth: .infinity, minHeight: 220)
+                            .padding(.horizontal, 20)
                         } else {
                             LazyVGrid(columns: columns, spacing: 20) {
                                 ForEach(folderApps) { app in
@@ -628,19 +623,27 @@ struct FolderDetailView: View {
                                     }
                                 }
                             }
-                            .padding(.horizontal, 24)
-                            .padding(.vertical, 20)
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 18)
                         }
                     }
                 }
-                .frame(minWidth: 700, minHeight: 500)
+                .frame(width: 620, height: 430)
                 .background(
-                    VisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
+                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .fill(Color(red: 0.15, green: 0.15, blue: 0.16).opacity(0.96))
                 )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .strokeBorder(.white.opacity(0.12), lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.35), radius: 24, y: 12)
+                .contentShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+                .background(WindowDragBlocker())
             } else {
                 Color.clear
                     .frame(width: 1, height: 1)
-                    .onAppear { dismiss() }
+                    .onAppear { store.send(.closeFolder) }
             }
         }
     }
@@ -682,6 +685,18 @@ struct VisualEffectView: NSViewRepresentable {
         return v
     }
     func updateNSView(_ v: NSVisualEffectView, context: Context) {}
+}
+
+struct WindowDragBlocker: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        NonDraggableNSView()
+    }
+    
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+final class NonDraggableNSView: NSView {
+    override var mouseDownCanMoveWindow: Bool { false }
 }
 
 extension View {
