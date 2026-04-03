@@ -27,7 +27,7 @@ let package = Package(
                 .product(name: "ComposableArchitecture", package: "swift-composable-architecture")
             ],
             path: "tests",
-            exclude: ["E2ETest.md"]
+            exclude: ["E2ETest.md", "e2e-test.applescript", "LaunchpadUITests.swift"]
         )
     ]
 )

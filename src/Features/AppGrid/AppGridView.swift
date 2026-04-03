@@ -175,39 +175,16 @@ struct AppGridView: View {
             if !store.searchQuery.isEmpty { store.send(.setSearchQuery("")); return .handled }
             return .ignored
         }
-        .overlay(
-            Group {
-                if store.openFolderID != nil {
-                    Color.black
-                        .opacity(0.3) // 半透明遮罩
-                        .ignoresSafeArea()
-                        .onTapGesture {
-                            store.send(.closeFolder)
-                        }
+        .sheet(item: Binding(
+            get: { store.openFolderID.flatMap { id in store.folders.first(where: { $0.id == id }) } },
+            set: { newValue in
+                if newValue == nil {
+                    store.send(.closeFolder)
                 }
             }
-        )
-        .sheet(isPresented: isFolderOpen) {
-            if let folderID = store.openFolderID,
-               let folder = store.folders.first(where: { $0.id == folderID }) {
-                // 使用 appMap 進行 O(1) 查找，而非 O(n) 的 first(where:)
-                let folderApps = folder.appIDs.compactMap { id -> AppItem? in
-                    guard let app = store.appMap[id] else { return nil }
-                    // Apply custom name
-                    if let customName = store.preferences.customAppNames[app.bundleIdentifier] {
-                        var modifiedApp = app
-                        modifiedApp.name = customName
-                        return modifiedApp
-                    }
-                    return app
-                }
-                
-                FolderDetailView(
-                    folder: folder,
-                    folderApps: folderApps,
-                    store: store
-                )
-            }
+        )) { folder in
+            FolderDetailView(folderID: folder.id, store: store)
+                .id(folder.id)
         }
     }
 }
@@ -413,7 +390,8 @@ struct FolderGridItem: View {
     @State private var newFolderName = ""
     
     var previewApps: [AppItem] {
-        folder.appIDs.prefix(4).compactMap { id in allApps.first { $0.id == id } }
+        // 使用 appMap 進行 O(1) 查找
+        folder.appIDs.prefix(4).compactMap { store.appMap[$0] }
     }
     
     var body: some View {
@@ -511,131 +489,159 @@ struct FolderGridItem: View {
 // MARK: - Folder Detail View (Modal)
 
 struct FolderDetailView: View {
-    let folder: Folder
-    let folderApps: [AppItem] // 直接接收已過濾的 apps，而非全部
+    let folderID: UUID
     let store: StoreOf<AppGridFeature>
     
     @State private var isEditingName = false
     @State private var editedName = ""
     @Environment(\.dismiss) private var dismiss
     
-    // 移除計算屬性 folderApps，直接使用傳入的參數
-    
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 8)
     
+    private var folder: Folder? {
+        store.folders.first(where: { $0.id == folderID })
+    }
+    
+    private var folderApps: [AppItem] {
+        guard let folder else { return [] }
+        
+        return folder.appIDs.compactMap { id -> AppItem? in
+            guard let app = store.appMap[id] else { return nil }
+            if let customName = store.preferences.customAppNames[app.bundleIdentifier] {
+                var modifiedApp = app
+                modifiedApp.name = customName
+                return modifiedApp
+            }
+            return app
+        }
+    }
+    
     var body: some View {
-        ZStack {
-            // 背景層，用於處理點擊關閉
-            Color.clear
-                .background(VisualEffectView(material: .hudWindow, blendingMode: .behindWindow))
-                .onTapGesture {
-                    dismiss()
-                }
-                .contentShape(Rectangle())
-                .ignoresSafeArea() // 確保覆蓋整個區域
-            
-            // 主要內容層
-            VStack(spacing: 0) {
-                // Header
-                HStack {
-                    Button(action: { dismiss() }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "xmark")
-                                .fontWeight(.semibold)
-                            Text("Close")
-                        }
-                        .foregroundStyle(.white)
-                        .font(.system(size: 13))
-                    }
-                    .buttonStyle(.plain)
-                    
-                    Spacer()
-                    
-                    // Editable folder name
-                    if isEditingName {
-                        TextField("Folder Name", text: $editedName)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 16, weight: .semibold))
+        Group {
+            if let folder {
+                VStack(spacing: 0) {
+                    // Header
+                    HStack {
+                        Button(action: { dismiss() }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "xmark")
+                                    .fontWeight(.semibold)
+                                Text("Close")
+                            }
                             .foregroundStyle(.white)
-                            .multilineTextAlignment(.center)
-                            .frame(minWidth: 100, maxWidth: 200)
-                            .onSubmit {
+                            .font(.system(size: 13))
+                        }
+                        .buttonStyle(.plain)
+                        
+                        Spacer()
+                        
+                        // Editable folder name
+                        if isEditingName {
+                            TextField("Folder Name", text: $editedName)
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .multilineTextAlignment(.center)
+                                .frame(minWidth: 100, maxWidth: 200)
+                                .onSubmit {
+                                    if !editedName.trimmingCharacters(in: .whitespaces).isEmpty {
+                                        store.send(.renameFolder(id: folder.id, name: editedName))
+                                    }
+                                    isEditingName = false
+                                }
+                            
+                            Button("Save") {
                                 if !editedName.trimmingCharacters(in: .whitespaces).isEmpty {
                                     store.send(.renameFolder(id: folder.id, name: editedName))
                                 }
                                 isEditingName = false
                             }
-                        
-                        Button("Save") {
-                            if !editedName.trimmingCharacters(in: .whitespaces).isEmpty {
-                                store.send(.renameFolder(id: folder.id, name: editedName))
-                            }
-                            isEditingName = false
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.white)
-                    } else {
-                        Text(folder.name)
-                            .font(.system(size: 16, weight: .semibold))
+                            .buttonStyle(.plain)
                             .foregroundStyle(.white)
-                            .onTapGesture(count: 2) {
-                                editedName = folder.name
-                                isEditingName = true
-                            }
-                            .contextMenu {
-                                Button("Rename") {
+                        } else {
+                            Text(folder.name)
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .onTapGesture(count: 2) {
                                     editedName = folder.name
                                     isEditingName = true
                                 }
-                            }
-                    }
-                    
-                    Spacer()
-                }
-                .padding(.horizontal, 24)
-                .padding(.vertical, 16)
-                
-                Divider()
-                    .background(.white.opacity(0.2))
-                
-                ScrollView(.vertical, showsIndicators: false) {
-                    LazyVGrid(columns: columns, spacing: 20) {
-                        ForEach(folderApps) { app in
-                            VStack(spacing: 5) {
-                                if let icon = app.icon {
-                                    Image(nsImage: icon)
-                                        .resizable()
-                                        .aspectRatio(contentMode: .fit)
-                                        .frame(width: 60, height: 60)
+                                .contextMenu {
+                                    Button("Rename") {
+                                        editedName = folder.name
+                                        isEditingName = true
+                                    }
                                 }
-                                Text(app.name)
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.white)
-                                    .lineLimit(2)
-                                    .multilineTextAlignment(.center)
-                                    .frame(width: 72)
-                            }
-                            .frame(width: 80)
-                            .contentShape(Rectangle())
-                            .onTapGesture(count: 2) {
-                                store.send(.launchApp(app))
-                            }
-                            .contextMenu {
-                                Button("Open") { store.send(.launchApp(app)) }
-                                Divider()
-                                Button("Remove from Folder") {
-                                    store.send(.removeAppFromFolder(appID: app.id, folderID: folder.id))
-                                }
-                            }
                         }
+                        
+                        Spacer()
                     }
                     .padding(.horizontal, 24)
-                    .padding(.vertical, 20)
+                    .padding(.vertical, 16)
+                    
+                    Divider()
+                        .background(.white.opacity(0.2))
+                    
+                    ScrollView(.vertical, showsIndicators: false) {
+                        if folderApps.isEmpty {
+                            VStack(spacing: 12) {
+                                Image(systemName: "tray")
+                                    .font(.system(size: 36))
+                                    .foregroundStyle(.white.opacity(0.45))
+                                Text("這個資料夾目前沒有 App")
+                                    .font(.system(size: 15, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.75))
+                                Text("把 App 拖進這個資料夾後，會顯示在這裡。")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.white.opacity(0.5))
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 280)
+                            .padding(.horizontal, 24)
+                        } else {
+                            LazyVGrid(columns: columns, spacing: 20) {
+                                ForEach(folderApps) { app in
+                                    VStack(spacing: 5) {
+                                        if let icon = app.icon {
+                                            Image(nsImage: icon)
+                                                .resizable()
+                                                .aspectRatio(contentMode: .fit)
+                                                .frame(width: 60, height: 60)
+                                        }
+                                        Text(app.name)
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(.white)
+                                            .lineLimit(2)
+                                            .multilineTextAlignment(.center)
+                                            .frame(width: 72)
+                                    }
+                                    .frame(width: 80)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture(count: 2) {
+                                        store.send(.launchApp(app))
+                                    }
+                                    .contextMenu {
+                                        Button("Open") { store.send(.launchApp(app)) }
+                                        Divider()
+                                        Button("Remove from Folder") {
+                                            store.send(.removeAppFromFolder(appID: app.id, folderID: folder.id))
+                                        }
+                                    }
+                                }
+                            }
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 20)
+                        }
+                    }
                 }
+                .frame(minWidth: 700, minHeight: 500)
+                .background(
+                    VisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
+                )
+            } else {
+                Color.clear
+                    .frame(width: 1, height: 1)
+                    .onAppear { dismiss() }
             }
-            .frame(minWidth: 700, minHeight: 500)
-            .padding(20) // 添加一些邊距，使點擊區域更容易觸及
-            .background(.ultraThickMaterial) // 使用更厚的材料以確保內容與背景區分
         }
     }
 }

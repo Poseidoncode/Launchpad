@@ -107,6 +107,12 @@ struct AppGridFeature {
                 state.apps = apps
                 state.rebuildAppMap() // 建立 ID 映射
                 
+                #if DEBUG
+                print("[appsLoaded] Total apps: \(apps.count)")
+                print("[appsLoaded] App IDs sample: \(apps.prefix(3).map { $0.id })")
+                print("[appsLoaded] Folders before: \(state.folders.map { "\($0.name): \($0.appIDs.count) apps" })")
+                #endif
+                
                 let currentIDs = Set(apps.map(\.id))
                 let orderedExistingIDs = state.appOrder.filter { currentIDs.contains($0) }
                 let missingIDs = apps.map(\.id).filter { !orderedExistingIDs.contains($0) }
@@ -118,6 +124,15 @@ struct AppGridFeature {
                     state.updateDisplayedApps()
                     return .send(.savePreferences)
                 }
+                
+                #if DEBUG
+                print("[appsLoaded] appMap keys count: \(state.appMap.count)")
+                if let firstFolder = state.folders.first {
+                    print("[appsLoaded] First folder appIDs: \(firstFolder.appIDs)")
+                    let found = firstFolder.appIDs.compactMap { state.appMap[$0] }.count
+                    print("[appsLoaded] Found in appMap: \(found)/\(firstFolder.appIDs.count)")
+                }
+                #endif
                 
                 state.updateDisplayedApps()
                 return .none
@@ -148,6 +163,19 @@ struct AppGridFeature {
                 return .none
                 
             case let .openFolder(id):
+                // 強制確保 appMap 已經建立
+                if state.appMap.isEmpty && !state.apps.isEmpty {
+                    state.rebuildAppMap()
+                }
+                #if DEBUG
+                print("[openFolder] openFolderID: \(id)")
+                print("[openFolder] appMap count: \(state.appMap.count)")
+                if let folder = state.folders.first(where: { $0.id == id }) {
+                    print("[openFolder] folder appIDs: \(folder.appIDs)")
+                    let found = folder.appIDs.filter { state.appMap[$0] != nil }.count
+                    print("[openFolder] found in appMap: \(found)/\(folder.appIDs.count)")
+                }
+                #endif
                 state.openFolderID = id
                 return .none
                 
