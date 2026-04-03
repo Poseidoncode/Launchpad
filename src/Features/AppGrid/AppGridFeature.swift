@@ -17,6 +17,7 @@ struct AppGridFeature {
         
         private(set) var displayedApps: [AppItem] = []
         private var orderIndexMap: [UUID: Int] = [:]
+        private(set) var appMap: [UUID: AppItem] = [:] // 改為 internal，讓 View 可以存取
         
         mutating func updateDisplayedApps() {
             let query = searchQuery.lowercased()
@@ -44,6 +45,26 @@ struct AppGridFeature {
         
         mutating func rebuildOrderIndexMap() {
             orderIndexMap = Dictionary(uniqueKeysWithValues: appOrder.enumerated().map { ($0.element, $0.offset) })
+        }
+        
+        mutating func rebuildAppMap() {
+            appMap = Dictionary(uniqueKeysWithValues: apps.map { ($0.id, $0) })
+        }
+        
+        // 快速取得 folder 的 apps（O(n) 而非 O(n*m)）
+        func getFolderApps(folderID: UUID) -> [AppItem] {
+            guard let folder = folders.first(where: { $0.id == folderID }) else { return [] }
+            
+            return folder.appIDs.compactMap { id -> AppItem? in
+                guard let app = appMap[id] else { return nil }
+                // Apply custom name
+                if let customName = preferences.customAppNames[app.bundleIdentifier] {
+                    var modifiedApp = app
+                    modifiedApp.name = customName
+                    return modifiedApp
+                }
+                return app
+            }
         }
     }
     
@@ -75,14 +96,16 @@ struct AppGridFeature {
                 state.folders = state.preferences.folders
                 state.appOrder = state.preferences.appOrder
                 state.rebuildOrderIndexMap()
+                
+                // 背景加載應用列表，避免阻塞 UI
                 return .run { send in
-                    let apps = await AppScanner.shared.scanApps()
-                    await send(.appsLoaded(apps))
+                    await send(.appsLoaded(await AppScanner.shared.scanApps()))
                 }
                 
             case let .appsLoaded(apps):
                 state.isLoading = false
                 state.apps = apps
+                state.rebuildAppMap() // 建立 ID 映射
                 
                 let currentIDs = Set(apps.map(\.id))
                 let orderedExistingIDs = state.appOrder.filter { currentIDs.contains($0) }

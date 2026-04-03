@@ -34,8 +34,11 @@ final class IconCache {
     }
     
     func preload(paths: [String]) async {
+        // 限制預加載的數量以提高性能
+        let limitedPaths = Array(paths.prefix(50)) // 只預加載前50個圖示
+        
         await withTaskGroup(of: Void.self) { group in
-            for path in paths {
+            for path in limitedPaths {
                 group.addTask {
                     _ = self.icon(for: path)
                 }
