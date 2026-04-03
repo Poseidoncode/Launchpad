@@ -6,8 +6,6 @@ import UniformTypeIdentifiers
 struct AppGridView: View {
     @Bindable var store: StoreOf<AppGridFeature>
     @State private var draggingApp: AppItem?
-    @State private var dropTargetApp: AppItem?
-    @State private var isDragging = false
     
     private var gridColumns: [GridItem] {
         Array(repeating: GridItem(.flexible(), spacing: 8), count: 13)
@@ -113,28 +111,13 @@ struct AppGridView: View {
                                 AppGridItem(
                                     app: app,
                                     isEditMode: store.isEditMode,
-                                    isDragging: draggingApp?.id == app.id,
-                                    isDropTarget: dropTargetApp?.id == app.id,
                                     hasActiveDrag: draggingApp != nil,
                                     store: store,
                                     onDragStart: {
                                         draggingApp = app
-                                        isDragging = true
                                     },
                                     onDragEnd: { 
                                         draggingApp = nil
-                                        dropTargetApp = nil
-                                        isDragging = false
-                                    },
-                                    onDropEnter: { 
-                                        if draggingApp?.id != app.id {
-                                            dropTargetApp = app
-                                        }
-                                    },
-                                    onDropExit: { 
-                                        if dropTargetApp?.id == app.id {
-                                            dropTargetApp = nil
-                                        }
                                     }
                                 )
                             }
@@ -190,25 +173,22 @@ struct AppGridView: View {
 struct AppGridItem: View {
     let app: AppItem
     let isEditMode: Bool
-    let isDragging: Bool
-    let isDropTarget: Bool
     let hasActiveDrag: Bool
     let store: StoreOf<AppGridFeature>
     var onDragStart: () -> Void
     var onDragEnd: () -> Void
-    var onDropEnter: () -> Void
-    var onDropExit: () -> Void
     
     @State private var isHovered = false
     @State private var showRenameSheet = false
     @State private var newName = ""
     @State private var isDraggingLocal = false
+    @State private var isCurrentDropTarget = false
     
     var body: some View {
         VStack(spacing: 5) {
             ZStack {
                 // Drop target indicator
-                if isDropTarget && hasActiveDrag {
+                if isCurrentDropTarget && hasActiveDrag {
                     RoundedRectangle(cornerRadius: 14)
                         .stroke(Color.accentColor, lineWidth: 3)
                         .frame(width: 66, height: 66)
@@ -296,16 +276,7 @@ struct AppGridItem: View {
             .clipShape(RoundedRectangle(cornerRadius: 12))
         }
         // Drop support
-        .onDrop(of: [UTType.text], isTargeted: Binding(
-            get: { isDropTarget },
-            set: { newValue in
-                if newValue {
-                    onDropEnter()
-                } else {
-                    onDropExit()
-                }
-            }
-        )) { providers in
+        .onDrop(of: [UTType.text], isTargeted: $isCurrentDropTarget) { providers in
             guard let provider = providers.first else { return false }
             
             provider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { item, _ in
@@ -313,6 +284,7 @@ struct AppGridItem: View {
                     defer { 
                         onDragEnd()
                         isDraggingLocal = false
+                        isCurrentDropTarget = false
                     }
                     
                     guard let draggedIDStr = draggedIDString(from: item),

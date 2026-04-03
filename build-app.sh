@@ -68,45 +68,70 @@ EOF
 echo "📝 Creating PkgInfo..."
 echo -n "APPL????" > "${APP_DIR}/Contents/PkgInfo"
 
-# 創建簡單的應用程式圖示
+# 使用專案提供的 PNG 建立 macOS 應用程式圖示
 echo "🎨 Creating app icon..."
 python3 << 'PYTHON_SCRIPT'
 import os
 import subprocess
+import sys
+import shutil
 
 app_dir = "build/Launchpad.app/Contents/Resources"
 iconset_dir = "build/icon.iconset"
+source_icon = "src/asset/icon.png"
+
+if not os.path.exists(source_icon):
+    print(f"Source icon not found: {source_icon}", file=sys.stderr)
+    sys.exit(1)
 
 # 創建 iconset 目錄
 os.makedirs(iconset_dir, exist_ok=True)
 
-# 創建簡單的 PNG 圖示 (使用 sips 或 defaults)
-# 這裡我們創建一個基本的圖示
-for size in [16, 32, 64, 128, 256, 512]:
-    icon_path = f"{iconset_dir}/icon_{size}x{size}.png"
-    # 使用一個佔位圖示
-    subprocess.run([
-        "sips", "-s", "format", "png",
-        "--resampleWidth", str(size),
-        "-o", icon_path,
-        "/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/GenericApplicationIcon.icns"
-    ], capture_output=True)
-    
-    # 創建 @2x 版本
-    if size <= 256:
-        icon_path_2x = f"{iconset_dir}/icon_{size}x{size}@2x.png"
-        subprocess.run([
-            "sips", "-s", "format", "png",
-            "--resampleWidth", str(size * 2),
-            "-o", icon_path_2x,
-            "/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/GenericApplicationIcon.icns"
-        ], capture_output=True)
+icon_specs = [
+    ("icon_16x16.png", 16),
+    ("icon_16x16@2x.png", 32),
+    ("icon_32x32.png", 32),
+    ("icon_32x32@2x.png", 64),
+    ("icon_128x128.png", 128),
+    ("icon_128x128@2x.png", 256),
+    ("icon_256x256.png", 256),
+    ("icon_256x256@2x.png", 512),
+    ("icon_512x512.png", 512),
+    ("icon_512x512@2x.png", 1024),
+]
+
+for filename, size in icon_specs:
+    output_path = f"{iconset_dir}/{filename}"
+    result = subprocess.run(
+        [
+            "sips",
+            "-s",
+            "format",
+            "png",
+            "--resampleWidth",
+            str(size),
+            source_icon,
+            "--out",
+            output_path,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(result.stderr, file=sys.stderr)
+        sys.exit(result.returncode)
 
 # 轉換為 icns
-subprocess.run(["iconutil", "-c", "icns", "-o", f"{app_dir}/AppIcon.icns", iconset_dir], capture_output=True)
+result = subprocess.run(
+    ["iconutil", "-c", "icns", "-o", f"{app_dir}/AppIcon.icns", iconset_dir],
+    capture_output=True,
+    text=True,
+)
+if result.returncode != 0:
+    print(result.stderr, file=sys.stderr)
+    sys.exit(result.returncode)
 
 # 清理
-import shutil
 shutil.rmtree(iconset_dir, ignore_errors=True)
 PYTHON_SCRIPT
 
