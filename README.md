@@ -21,36 +21,27 @@ A modern macOS application launcher built with SwiftUI and TCA (The Composable A
 
 ## 🛠 Installation
 
-### Quick Install (Recommended)
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Poseidoncode/Launchpad/main/install.sh)
+```
+
+Requires macOS 14+ and Xcode 15+. Clones, builds, and installs to `/Applications` — nothing left behind.
+
+### Homebrew
 
 ```bash
-# Clone the repository
+brew tap Poseidoncode/Launchpad
+brew install --HEAD launchpad
+cp -r $(brew --prefix)/opt/launchpad/Launchpad.app /Applications/
+```
+
+### Dev
+
+```bash
 git clone https://github.com/Poseidoncode/Launchpad.git
 cd Launchpad
-
-# Build and install to Applications folder
-./install.sh
-```
-
-### Manual Install
-
-```bash
-# Build the app binary
-./build-app.sh
-
-# Copy or move to Applications
-cp -r build/Launchpad.app /Applications/
-```
-
-### Run for Developers
-
-```bash
-# Build and run via Swift CLI
 swift build
 .build/debug/Launchpad
-
-# Or open in Xcode for debugging
-open Package.swift
 ```
 
 ## 📖 Usage Guide

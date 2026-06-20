@@ -21,36 +21,27 @@
 
 ## 🛠 安裝指南
 
-### 快速安裝（推薦）
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Poseidoncode/Launchpad/main/install.sh)
+```
+
+需要 macOS 14+ 和 Xcode 15+。會自動下載、編譯並安裝到 `/Applications`，用完即清。
+
+### Homebrew
 
 ```bash
-# 複製儲存庫
+brew tap Poseidoncode/Launchpad
+brew install --HEAD launchpad
+cp -r $(brew --prefix)/opt/launchpad/Launchpad.app /Applications/
+```
+
+### 開發
+
+```bash
 git clone https://github.com/Poseidoncode/Launchpad.git
 cd Launchpad
-
-# 編譯並安裝至應用程式資料夾
-./install.sh
-```
-
-### 手動編譯
-
-```bash
-# 建置 App
-./build-app.sh
-
-# 複製到應用程式目錄
-cp -r build/Launchpad.app /Applications/
-```
-
-### 開發者執行
-
-```bash
-# 透過 Swift CLI 執行
 swift build
 .build/debug/Launchpad
-
-# 或使用 Xcode 開啟
-open Package.swift
 ```
 
 ## 📖 使用說明
