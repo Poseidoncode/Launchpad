@@ -146,8 +146,6 @@ cat > "${APP_DIR}/Contents/Launchpad.entitlements" << EOF
     <true/>
     <key>com.apple.security.files.user-selected.read-only</key>
     <true/>
-    <key>com.apple.security.automation.apple-events</key>
-    <true/>
 </dict>
 </plist>
 EOF
