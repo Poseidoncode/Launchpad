@@ -1,10 +1,12 @@
 import AppKit
 import Foundation
+import os
 
 final class IconCache {
     static let shared = IconCache()
     
     private let cache = NSCache<NSString, NSImage>()
+    private let lock = OSAllocatedUnfairLock()
     
     private init() {
         cache.countLimit = 500
@@ -12,9 +14,12 @@ final class IconCache {
     }
     
     func icon(for path: String, desiredSize: NSSize = NSSize(width: 64, height: 64)) async -> NSImage? {
-        let key = "\(path)_\(Int(desiredSize.width))x\(Int(desiredSize.height))" as NSString
+        let key = "\(path)_\(Int(desiredSize.width))x\(Int(desiredSize.height))"
+        let nsKey = key as NSString
         
-        if let cached = cache.object(forKey: key) {
+        // ponytail: double-check with lock — concurrent requests for the same key
+        // may both generate, but only one result is cached and the extra work is negligible
+        if let cached = lock.withLock({ cache.object(forKey: nsKey) }) {
             return cached
         }
         
@@ -24,7 +29,7 @@ final class IconCache {
         
         if icon.size == desiredSize {
             let cost = Int(icon.size.width * icon.size.height * 4)
-            cache.setObject(icon, forKey: key, cost: cost)
+            lock.withLock { cache.setObject(icon, forKey: nsKey, cost: cost) }
             return icon
         }
         
@@ -33,23 +38,23 @@ final class IconCache {
         }.value
         
         let cost = Int(resized.size.width * resized.size.height * 4)
-        cache.setObject(resized, forKey: key, cost: cost)
+        lock.withLock { cache.setObject(resized, forKey: nsKey, cost: cost) }
         return resized
     }
     
     func clear() {
-        cache.removeAllObjects()
+        lock.withLock { cache.removeAllObjects() }
     }
 }
 
 extension NSImage {
-    func resized(to size: NSSize) -> NSImage? {
-        guard self.size != size else { return self }
+    func resized(to targetSize: NSSize) -> NSImage? {
+        guard self.size != targetSize else { return self }
         
-        let newImage = NSImage(size: size)
-        newImage.lockFocus()
-        self.draw(in: NSRect(origin: .zero, size: size))
-        newImage.unlockFocus()
-        return newImage
+        // ponytail: drawing handler instead of deprecated lockFocus API
+        return NSImage(size: targetSize, flipped: false) { [self] _ in
+            self.draw(in: NSRect(origin: .zero, size: targetSize))
+            return true
+        }
     }
 }

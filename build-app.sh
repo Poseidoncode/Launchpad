@@ -135,9 +135,31 @@ if result.returncode != 0:
 shutil.rmtree(iconset_dir, ignore_errors=True)
 PYTHON_SCRIPT
 
+# 生成 Sandbox Entitlements
+echo "🔐 Creating entitlements..."
+cat > "${APP_DIR}/Contents/Launchpad.entitlements" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <key>com.apple.security.files.user-selected.read-only</key>
+    <true/>
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+</dict>
+</plist>
+EOF
+
 # 設定權限
 echo "🔐 Setting permissions..."
 chmod +x "${APP_DIR}/Contents/MacOS/${APP_NAME}"
+
+# 簽署（ad-hoc，若 dev 證書不存在則跳過）
+if security find-identity -v -p basic 2>/dev/null | grep -q ""; then
+    codesign --force --deep --sign - "${APP_DIR}" 2>/dev/null || true
+fi
 
 # 完成
 echo ""

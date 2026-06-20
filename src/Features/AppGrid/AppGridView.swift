@@ -9,6 +9,7 @@ private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.laun
 struct AppGridView: View {
     @Bindable var store: StoreOf<AppGridFeature>
     @State private var draggingApp: AppItem?
+    @State private var lastPrefData: Data?
     @FocusState private var isSearchFocused: Bool
     
     private var gridColumns: [GridItem] {
@@ -52,11 +53,12 @@ struct AppGridView: View {
                             .focused($isSearchFocused)
                             .textFieldStyle(.plain)
                             .font(.system(size: 13))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(.white.opacity(store.openFolderID != nil ? 0.3 : 1))
                             .frame(width: 180)
+                            .disabled(store.openFolderID != nil)
                             .placeholder(when: store.searchQuery.isEmpty) {
                                 Text("Search")
-                                    .foregroundStyle(.white.opacity(0.5))
+                                    .foregroundStyle(.white.opacity(store.openFolderID != nil ? 0.2 : 0.5))
                                     .font(.system(size: 13))
                             }
                         if !store.searchQuery.isEmpty {
@@ -70,6 +72,7 @@ struct AppGridView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
                     .background(.ultraThinMaterial, in: Capsule())
+                    .opacity(store.openFolderID != nil ? 0.5 : 1)
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
@@ -170,8 +173,9 @@ struct AppGridView: View {
         .preferredColorScheme(.dark)
         .onAppear { store.send(.onAppear) }
         .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification).debounce(for: .seconds(0.3), scheduler: DispatchQueue.main)) { _ in
-            // Only react when our preferences key changed, not on every system notification
-            guard UserDefaults.standard.data(forKey: "LaunchpadUserPreferences") != nil else { return }
+            let currentData = UserDefaults.standard.data(forKey: "LaunchpadUserPreferences")
+            guard currentData != nil, currentData != lastPrefData else { return }
+            lastPrefData = currentData
             store.send(.reloadPreferences)
         }
         .onKeyPress(.escape) {
@@ -201,10 +205,48 @@ struct AppGridView: View {
             }
         }
         .animation(.easeOut(duration: 0.16), value: store.openFolderID)
-        Button("") { isSearchFocused = true }
-            .keyboardShortcut("f", modifiers: .command)
-            .opacity(0)
-            .frame(width: 0, height: 0)
+        // Error banner
+        .overlay(alignment: .top) {
+            if let error = store.errorMessage {
+                HStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.yellow)
+                    Text(error)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.white)
+                    Spacer()
+                    Button {
+                        store.send(.dismissError)
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.white.opacity(0.6))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .padding(.horizontal, 40)
+                .padding(.top, 8)
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .onAppear {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+                        store.send(.dismissError)
+                    }
+                }
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: store.errorMessage != nil)
+        // ponytail: invisible button attached to main content for Cmd+F focus
+        .background {
+            Button("") { isSearchFocused = true }
+                .keyboardShortcut("f", modifiers: .command)
+                .opacity(0)
+                .frame(width: 0, height: 0)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
     }
 }
 
@@ -377,22 +419,6 @@ struct AppGridItem: View {
             .frame(width: 280)
         }
     }
-    
-    private func draggedIDString(from item: NSSecureCoding?) -> String? {
-        if let data = item as? Data {
-            return String(data: data, encoding: .utf8)
-        }
-        
-        if let string = item as? String {
-            return string
-        }
-        
-        if let nsString = item as? NSString {
-            return nsString as String
-        }
-        
-        return nil
-    }
 }
 
 // MARK: - Folder Grid Item
@@ -474,11 +500,10 @@ struct FolderGridItem: View {
         .onDrop(of: [UTType.text], isTargeted: $isDropTargeted) { providers in
             guard let provider = providers.first else { return false }
             
-            provider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { data, _ in
+            provider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { item, _ in
                 DispatchQueue.main.async {
-                    guard let data = data as? Data,
-                          let idStr = String(data: data, encoding: .utf8),
-                          let uuid = UUID(uuidString: idStr) else { return }
+                    guard let draggedIDStr = draggedIDString(from: item),
+                          let uuid = UUID(uuidString: draggedIDStr) else { return }
                     
                     store.send(.addAppToFolder(appID: uuid, folderID: folder.id))
                 }
@@ -523,6 +548,8 @@ struct FolderDetailView: View {
     
     @State private var isEditingName = false
     @State private var editedName = ""
+    @State private var folderApps: [AppItem] = []
+    @State private var folderSearchQuery = ""
     
     private var columns: [GridItem] {
         Array(repeating: GridItem(.flexible(), spacing: 8), count: max(store.preferences.columns, 1))
@@ -532,19 +559,7 @@ struct FolderDetailView: View {
         store.folders.first(where: { $0.id == folderID })
     }
     
-    private var folderApps: [AppItem] {
-        guard let folder else { return [] }
-        
-        return folder.appIDs.compactMap { id -> AppItem? in
-            guard let app = store.appMap[id] else { return nil }
-            if let customName = store.preferences.customAppNames[app.bundleIdentifier] {
-                var modifiedApp = app
-                modifiedApp.name = customName
-                return modifiedApp
-            }
-            return app
-        }
-    }
+
     
     var body: some View {
         Group {
@@ -612,8 +627,46 @@ struct FolderDetailView: View {
                     Divider()
                         .background(.white.opacity(0.2))
                     
+                    // Folder-local search
+                    HStack(spacing: 6) {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(.white.opacity(0.5))
+                            .font(.system(size: 12))
+                        TextField("Search in folder…", text: $folderSearchQuery)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 13))
+                            .foregroundStyle(.white)
+                        if !folderSearchQuery.isEmpty {
+                            Button(action: { folderSearchQuery = "" }) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.white.opacity(0.5))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.white.opacity(0.1), in: Capsule())
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+                    
                     ScrollView(.vertical, showsIndicators: false) {
-                        if folderApps.isEmpty {
+                        let filteredApps = folderSearchQuery.isEmpty
+                            ? folderApps
+                            : folderApps.filter { $0.name.localizedCaseInsensitiveContains(folderSearchQuery) }
+                        
+                        if filteredApps.isEmpty && !folderSearchQuery.isEmpty {
+                            VStack(spacing: 12) {
+                                Image(systemName: "magnifyingglass")
+                                    .font(.system(size: 32))
+                                    .foregroundStyle(.white.opacity(0.35))
+                                Text("No results in \"\(folder.name)\"")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.6))
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 220)
+                            .padding(.horizontal, 20)
+                        } else if folderApps.isEmpty {
                             VStack(spacing: 12) {
                                 Image(systemName: "tray")
                                     .font(.system(size: 36))
@@ -629,7 +682,7 @@ struct FolderDetailView: View {
                             .padding(.horizontal, 20)
                         } else {
                             LazyVGrid(columns: columns, spacing: 20) {
-                                ForEach(folderApps) { app in
+                                ForEach(filteredApps) { app in
                                     VStack(spacing: 5) {
                                         if let icon = app.icon {
                                             Image(nsImage: icon)
@@ -646,6 +699,8 @@ struct FolderDetailView: View {
                                     }
                                     .frame(width: store.preferences.iconSize + 20)
                                     .contentShape(Rectangle())
+                                    .accessibilityLabel(app.name)
+                                    .accessibilityAddTraits(.isButton)
                                     .onTapGesture {
                                         store.send(.launchApp(app))
                                     }
@@ -675,11 +730,28 @@ struct FolderDetailView: View {
                 .shadow(color: .black.opacity(0.35), radius: 24, y: 12)
                 .contentShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
                 .background(WindowDragBlocker())
+                .onAppear { folderApps = computeFolderApps() }
+                .onChange(of: store.folders) { _, _ in
+                    folderApps = computeFolderApps()
+                }
             } else {
                 Color.clear
                     .frame(width: 1, height: 1)
                     .onAppear { store.send(.closeFolder) }
             }
+        }
+    }
+    
+    private func computeFolderApps() -> [AppItem] {
+        guard let folder else { return [] }
+        return folder.appIDs.compactMap { id -> AppItem? in
+            guard let app = store.appMap[id] else { return nil }
+            if let customName = store.preferences.customAppNames[app.bundleIdentifier] {
+                var modifiedApp = app
+                modifiedApp.name = customName
+                return modifiedApp
+            }
+            return app
         }
     }
 }
@@ -705,6 +777,24 @@ struct ToolbarButton: View {
         .onHover { isHovered = $0 }
         .animation(.easeInOut(duration: 0.15), value: isHovered)
     }
+}
+
+// MARK: - Shared Helpers
+
+private func draggedIDString(from item: NSSecureCoding?) -> String? {
+    if let data = item as? Data {
+        return String(data: data, encoding: .utf8)
+    }
+    
+    if let string = item as? String {
+        return string
+    }
+    
+    if let nsString = item as? NSString {
+        return nsString as String
+    }
+    
+    return nil
 }
 
 struct WindowDragBlocker: NSViewRepresentable {

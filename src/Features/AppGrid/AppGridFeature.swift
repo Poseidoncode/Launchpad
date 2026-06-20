@@ -16,6 +16,7 @@ struct AppGridFeature {
         var isEditMode: Bool = false
         var searchQuery: String = ""
         var openFolderID: UUID? = nil
+        var errorMessage: String? = nil
         var preferences: UserPreferences = .default
         
         private(set) var displayedApps: [AppItem] = []
@@ -59,6 +60,13 @@ struct AppGridFeature {
             appMap = Dictionary(uniqueKeysWithValues: apps.map { ($0.id, $0) })
         }
         
+        // ponytail: incremental update — O(1) per affected ID instead of O(n) full rebuild
+        mutating func updateOrderIndices(for ids: [UUID]) {
+            for id in ids {
+                orderIndexMap[id] = appOrder.firstIndex(of: id)
+            }
+        }
+        
         // Get folder apps (O(n) via appMap)
         func getFolderApps(folderID: UUID) -> [AppItem] {
             guard let folder = folders.first(where: { $0.id == folderID }) else { return [] }
@@ -92,6 +100,8 @@ struct AppGridFeature {
         case addAppToFolder(appID: UUID, folderID: UUID)
         case removeAppFromFolder(appID: UUID, folderID: UUID)
         case renameApp(bundleIdentifier: String, newName: String)
+        case setErrorMessage(String?)
+        case dismissError
         case savePreferences
         case reloadPreferences
         case reloadApps
@@ -139,6 +149,7 @@ struct AppGridFeature {
             case let .launchApp(app):
                 if !NSWorkspace.shared.open(app.path) {
                     logger.error("Failed to launch: \(app.path.path, privacy: .public)")
+                    return .send(.setErrorMessage("Could not launch \(app.name)"))
                 }
                 return .none
                 
@@ -164,7 +175,7 @@ struct AppGridFeature {
                 }
                 
                 state.appOrder.swapAt(i1, i2)
-                state.rebuildOrderIndexMap()
+                state.updateOrderIndices(for: [id, withID])
                 state.updateDisplayedApps()
                 return .send(.savePreferences)
 
@@ -267,7 +278,16 @@ struct AppGridFeature {
                 state.updateDisplayedApps()
                 return .send(.savePreferences)
                 
+            case let .setErrorMessage(message):
+                state.errorMessage = message
+                return .none
+                
+            case .dismissError:
+                state.errorMessage = nil
+                return .none
+                
             case .savePreferences:
+                // ponytail: debounced 300ms — rapid drag operations batch into one write
                 let prefs = UserPreferences(
                     appOrder: state.appOrder,
                     folders: state.folders,
@@ -276,8 +296,11 @@ struct AppGridFeature {
                     columns: state.preferences.columns,
                     customAppNames: state.preferences.customAppNames
                 )
-                PreferencesStore.save(prefs)
-                return .none
+                return .run { _ in
+                    try await Task.sleep(nanoseconds: 300_000_000)
+                    PreferencesStore.save(prefs)
+                } catch: { _, _ in }
+                .cancellable(id: "prefs-save", cancelInFlight: true)
                 
             case .reloadApps:
                 state.isLoading = true

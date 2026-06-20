@@ -45,7 +45,10 @@ struct AppItem: Identifiable, Equatable, Codable {
     }
     
     static func == (lhs: AppItem, rhs: AppItem) -> Bool {
-        lhs.id == rhs.id
+        lhs.id == rhs.id &&
+        lhs.name == rhs.name &&
+        lhs.bundleIdentifier == rhs.bundleIdentifier &&
+        lhs.path == rhs.path
     }
     
     static func stableID(bundleIdentifier: String, path: URL) -> UUID {
