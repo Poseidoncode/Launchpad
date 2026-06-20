@@ -114,8 +114,7 @@ Launchpad/
 │   ├── Folder.swift                # 資料夾模型
 │   └── UserPreferences.swift       # 使用者偏好設定
 ├── Services/
-│   ├── AppScanner.swift            # 系統程式掃描服務
-│   └── FileSearcher.swift          # Spotlight 檔案搜尋整合
+│   └── AppScanner.swift            # 系統程式掃描服務
 └── Shared/
     └── Extensions/
 ```
@@ -126,7 +125,7 @@ Launchpad/
 - **TCA (The Composable Architecture)** - 穩定且具測試性的狀態管理
 - **Combine** - 響應式編程處理非同步事件
 - **FileManager** - 檔案系統操作
-- **Spotlight API** - 高效檔案檢索
+- **IconCache** - 應用程式圖標快取與縮放
 - **NSWorkspace** - 應用程式生命週期管理
 
 ## 🧪 測試說明

@@ -12,7 +12,7 @@ struct UserPreferences: Equatable, Codable {
         appOrder: [UUID] = [],
         folders: [Folder] = [],
         showHiddenApps: Bool = false,
-        iconSize: Double = 72,
+        iconSize: Double = 60,
         columns: Int = 7,
         customAppNames: [String: String] = [:]
     ) {

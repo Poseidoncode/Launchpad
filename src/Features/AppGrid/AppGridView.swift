@@ -2,10 +2,14 @@ import SwiftUI
 import ComposableArchitecture
 import AppKit
 import UniformTypeIdentifiers
+import OSLog
+
+private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.launchpad.app", category: "app-grid-view")
 
 struct AppGridView: View {
     @Bindable var store: StoreOf<AppGridFeature>
     @State private var draggingApp: AppItem?
+    @FocusState private var isSearchFocused: Bool
     
     private var gridColumns: [GridItem] {
         Array(repeating: GridItem(.flexible(), spacing: 8), count: max(store.preferences.columns, 1))
@@ -45,6 +49,7 @@ struct AppGridView: View {
                             .foregroundStyle(.white.opacity(0.7))
                             .font(.system(size: 13))
                         TextField("", text: $store.searchQuery.sending(\.setSearchQuery))
+                            .focused($isSearchFocused)
                             .textFieldStyle(.plain)
                             .font(.system(size: 13))
                             .foregroundStyle(.white)
@@ -73,11 +78,11 @@ struct AppGridView: View {
                 // Edit mode hint
                 if store.isEditMode {
                     HStack {
-                        Text("編輯模式：拖曳 App 以重新排序")
+                        Text("Edit Mode: Drag apps to reorder")
                             .font(.system(size: 12))
                             .foregroundStyle(.white.opacity(0.6))
                         Spacer()
-                        Button("完成") {
+                        Button("Done") {
                             store.send(.toggleEditMode)
                         }
                         .buttonStyle(.plain)
@@ -93,6 +98,32 @@ struct AppGridView: View {
                     Spacer()
                     ProgressView().tint(.white).scaleEffect(1.5)
                     Spacer()
+                } else if store.displayedApps.isEmpty && !store.searchQuery.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 40))
+                            .foregroundStyle(.white.opacity(0.3))
+                        Text("No Results for \"\(store.searchQuery)\"")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.6))
+                        Text("Try a different search term")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.white.opacity(0.4))
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if store.displayedApps.isEmpty && store.folders.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "square.grid.3x3")
+                            .font(.system(size: 40))
+                            .foregroundStyle(.white.opacity(0.3))
+                        Text("No Applications Found")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.6))
+                        Text("Make sure apps are installed in /Applications")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.white.opacity(0.4))
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ScrollView(.vertical, showsIndicators: false) {
                         LazyVGrid(columns: gridColumns, spacing: 20) {
@@ -130,7 +161,7 @@ struct AppGridView: View {
             }
             
             // ── Bottom device label ──────────────────────────────────
-            Text("裝置")
+            Text("Device")
                 .font(.system(size: 12))
                 .foregroundStyle(.white.opacity(0.5))
                 .padding(.bottom, 8)
@@ -138,16 +169,18 @@ struct AppGridView: View {
         .frame(minWidth: 900, minHeight: 600)
         .preferredColorScheme(.dark)
         .onAppear { store.send(.onAppear) }
-        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification).debounce(for: .seconds(0.3), scheduler: DispatchQueue.main)) { _ in
+            // Only react when our preferences key changed, not on every system notification
+            guard UserDefaults.standard.data(forKey: "LaunchpadUserPreferences") != nil else { return }
             store.send(.reloadPreferences)
         }
         .onKeyPress(.escape) {
+            if store.openFolderID != nil { store.send(.closeFolder); return .handled }
+            if !store.searchQuery.isEmpty { store.send(.setSearchQuery("")); return .handled }
             if store.isEditMode { 
                 store.send(.toggleEditMode)
                 return .handled 
             }
-            if store.openFolderID != nil { store.send(.closeFolder); return .handled }
-            if !store.searchQuery.isEmpty { store.send(.setSearchQuery("")); return .handled }
             return .ignored
         }
         .overlay {
@@ -168,6 +201,10 @@ struct AppGridView: View {
             }
         }
         .animation(.easeOut(duration: 0.16), value: store.openFolderID)
+        Button("") { isSearchFocused = true }
+            .keyboardShortcut("f", modifiers: .command)
+            .opacity(0)
+            .frame(width: 0, height: 0)
     }
 }
 
@@ -186,6 +223,7 @@ struct AppGridItem: View {
     @State private var newName = ""
     @State private var isDraggingLocal = false
     @State private var isCurrentDropTarget = false
+    private var iconSize: CGFloat { store.preferences.iconSize }
     
     var body: some View {
         VStack(spacing: 5) {
@@ -194,7 +232,7 @@ struct AppGridItem: View {
                 if isCurrentDropTarget && hasActiveDrag {
                     RoundedRectangle(cornerRadius: 14)
                         .stroke(Color.accentColor, lineWidth: 3)
-                        .frame(width: 66, height: 66)
+                        .frame(width: iconSize + 6, height: iconSize + 6)
                 }
                 
                 Group {
@@ -209,7 +247,7 @@ struct AppGridItem: View {
                             .foregroundStyle(.white.opacity(0.4))
                     }
                 }
-                .frame(width: 60, height: 60)
+                .frame(width: iconSize, height: iconSize)
                 .shadow(color: .black.opacity(0.35), radius: isHovered ? 10 : 4, y: isHovered ? 5 : 2)
                 .scaleEffect(isHovered ? 1.10 : 1.0)
                 .animation(.spring(response: 0.25, dampingFraction: 0.6), value: isHovered)
@@ -227,7 +265,7 @@ struct AppGridItem: View {
                         }
                         Spacer()
                     }
-                    .frame(width: 60, height: 60)
+                    .frame(width: iconSize, height: iconSize)
                 }
             }
             
@@ -236,13 +274,12 @@ struct AppGridItem: View {
                 .foregroundStyle(.white)
                 .lineLimit(2)
                 .multilineTextAlignment(.center)
-                .frame(width: 72)
+                .frame(width: iconSize + 12)
         }
-        .frame(width: 80)
+        .frame(width: iconSize + 20)
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
-        .onTapGesture(count: 2) {
-            // Double click to launch
+        .onTapGesture {
             if !isEditMode {
                 store.send(.launchApp(app))
             }
@@ -256,6 +293,15 @@ struct AppGridItem: View {
             Button("Rename") {
                 newName = app.name
                 showRenameSheet = true
+            }
+            Divider()
+            Button("Move to Trash") {
+                do {
+                    try NSWorkspace.shared.recycle([app.path])
+                    store.send(.reloadApps)
+                } catch {
+                    logger.error("Failed to move to trash: \(error.localizedDescription, privacy: .public)")
+                }
             }
         }
         // Drag support - using onDrag for macOS
@@ -294,8 +340,11 @@ struct AppGridItem: View {
                           let draggedID = UUID(uuidString: draggedIDStr),
                           draggedID != app.id else { return }
                     
-                    // Insert the dragged app after the drop target instead of swapping.
-                    store.send(.moveApp(id: draggedID, after: app.id))
+                    if isEditMode {
+                        store.send(.createFolder(name: "New Folder", appIDs: [draggedID, app.id]))
+                    } else {
+                        store.send(.moveApp(id: draggedID, after: app.id))
+                    }
                 }
             }
             return true
@@ -361,7 +410,7 @@ struct FolderGridItem: View {
     @State private var newFolderName = ""
     
     var previewApps: [AppItem] {
-        // 使用 appMap 進行 O(1) 查找
+        // O(1) lookup via appMap
         folder.appIDs.prefix(4).compactMap { store.appMap[$0] }
     }
     
@@ -370,24 +419,33 @@ struct FolderGridItem: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 16)
                     .fill(.white.opacity(isDropTargeted ? 0.25 : 0.12))
-                    .frame(width: 60, height: 60)
+                    .frame(width: preferences.iconSize, height: preferences.iconSize)
                     .shadow(color: .black.opacity(0.3), radius: 4, y: 2)
                 
-                LazyVGrid(
-                    columns: [GridItem(.flexible()), GridItem(.flexible())],
-                    spacing: 2
-                ) {
-                    ForEach(previewApps) { app in
-                        if let icon = app.icon {
-                            Image(nsImage: icon)
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .frame(width: 22, height: 22)
+                Group {
+                    if previewApps.isEmpty {
+                        Image(systemName: "folder")
+                            .font(.system(size: preferences.iconSize * 0.4))
+                            .foregroundStyle(.white.opacity(0.3))
+                    } else {
+                        let previewSize = preferences.iconSize * 0.37
+                        LazyVGrid(
+                            columns: [GridItem(.flexible()), GridItem(.flexible())],
+                            spacing: 2
+                        ) {
+                            ForEach(previewApps) { app in
+                                if let icon = app.icon {
+                                    Image(nsImage: icon)
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fit)
+                                        .frame(width: previewSize, height: previewSize)
+                                }
+                            }
                         }
+                        .padding(6)
+                        .frame(width: preferences.iconSize, height: preferences.iconSize)
                     }
                 }
-                .padding(6)
-                .frame(width: 60, height: 60)
             }
             .scaleEffect(isHovered ? 1.10 : 1.0)
             .animation(.spring(response: 0.25, dampingFraction: 0.6), value: isHovered)
@@ -397,9 +455,9 @@ struct FolderGridItem: View {
                 .foregroundStyle(.white)
                 .lineLimit(2)
                 .multilineTextAlignment(.center)
-                .frame(width: 72)
+                .frame(width: preferences.iconSize + 12)
         }
-        .frame(width: 80)
+        .frame(width: preferences.iconSize + 20)
         .onHover { isHovered = $0 }
         .onTapGesture { store.send(.openFolder(folder.id)) }
         .contextMenu {
@@ -560,10 +618,10 @@ struct FolderDetailView: View {
                                 Image(systemName: "tray")
                                     .font(.system(size: 36))
                                     .foregroundStyle(.white.opacity(0.45))
-                                Text("這個資料夾目前沒有 App")
+                                Text("This folder is empty")
                                     .font(.system(size: 15, weight: .medium))
                                     .foregroundStyle(.white.opacity(0.75))
-                                Text("把 App 拖進這個資料夾後，會顯示在這裡。")
+                                Text("Drag apps here to add them to this folder")
                                     .font(.system(size: 12))
                                     .foregroundStyle(.white.opacity(0.5))
                             }
@@ -577,18 +635,18 @@ struct FolderDetailView: View {
                                             Image(nsImage: icon)
                                                 .resizable()
                                                 .aspectRatio(contentMode: .fit)
-                                                .frame(width: 60, height: 60)
+                                                .frame(width: store.preferences.iconSize, height: store.preferences.iconSize)
                                         }
                                         Text(app.name)
                                             .font(.system(size: 11))
                                             .foregroundStyle(.white)
                                             .lineLimit(2)
                                             .multilineTextAlignment(.center)
-                                            .frame(width: 72)
+                                            .frame(width: store.preferences.iconSize + 12)
                                     }
-                                    .frame(width: 80)
+                                    .frame(width: store.preferences.iconSize + 20)
                                     .contentShape(Rectangle())
-                                    .onTapGesture(count: 2) {
+                                    .onTapGesture {
                                         store.send(.launchApp(app))
                                     }
                                     .contextMenu {

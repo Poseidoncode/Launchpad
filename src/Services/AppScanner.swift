@@ -15,12 +15,10 @@ actor AppScanner {
     private var lastScanTime: Date?
     private let cacheValidDuration: TimeInterval = 300
     
-    // 添加掃描進度追蹤
+    // Tracks whether a scan is in progress to prevent concurrent scans
     private var isScanning = false
     
-    private init() {
-        // 預設初始化時不立即掃描，而是等待第一次請求
-    }
+    private init() {}
     
     func scanApps(showHidden: Bool = false, forceRefresh: Bool = false) async -> [AppItem] {
         if !forceRefresh, let lastScan = lastScanTime, 
@@ -29,7 +27,7 @@ actor AppScanner {
             return cachedApps
         }
         
-        // 防止並發掃描
+        // Prevent concurrent scans
         if isScanning && !forceRefresh {
             try? await Task.sleep(nanoseconds: UInt64(0.1 * 1_000_000_000)) // 100ms
             return cachedApps
@@ -52,34 +50,29 @@ actor AppScanner {
             
             let appURLs = contents.filter { $0.pathExtension == "app" }
             
-            var batchApps: [AppItem] = []
-            try? await withThrowingTaskGroup(of: AppItem?.self) { group in
-                for url in appURLs {
-                    group.addTask { [self] in
-                        makeAppItem(from: url)
-                    }
-                }
-                for try await item in group {
-                    if let item { batchApps.append(item) }
+            for url in appURLs {
+                if let item = await makeAppItem(from: url) {
+                    apps.append(item)
                 }
             }
-            
-            apps.append(contentsOf: batchApps)
         }
         
         let sorted = apps.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        cachedApps = sorted
+        // ponytail: deduplicate by bundleIdentifier — same app from multiple paths shows once
+        var seenIDs = Set<String>()
+        let deduped = sorted.filter { seenIDs.insert($0.bundleIdentifier).inserted }
+        cachedApps = deduped
         lastScanTime = Date()
-        return sorted
+        return deduped
     }
     
-    private nonisolated func makeAppItem(from url: URL) -> AppItem? {
+    private func makeAppItem(from url: URL) async -> AppItem? {
         let bundle = Bundle(url: url)
         let name = bundle?.infoDictionary?["CFBundleDisplayName"] as? String
             ?? bundle?.infoDictionary?["CFBundleName"] as? String
             ?? url.deletingPathExtension().lastPathComponent
         let bundleID = bundle?.bundleIdentifier ?? url.path
-        let icon = IconCache.shared.icon(for: url.path)
+        let icon = await IconCache.shared.icon(for: url.path)
         
         return AppItem(
             id: AppItem.stableID(bundleIdentifier: bundleID, path: url),

@@ -1,6 +1,9 @@
 import ComposableArchitecture
 import Foundation
 import AppKit
+import OSLog
+
+private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.launchpad.app", category: "app-grid")
 
 @Reducer
 struct AppGridFeature {
@@ -17,7 +20,7 @@ struct AppGridFeature {
         
         private(set) var displayedApps: [AppItem] = []
         private var orderIndexMap: [UUID: Int] = [:]
-        var appMap: [UUID: AppItem] = [:]
+        private(set) var appMap: [UUID: AppItem] = [:]
         
         mutating func updateDisplayedApps() {
             let query = searchQuery.lowercased()
@@ -25,14 +28,19 @@ struct AppGridFeature {
                 $0.name.lowercased().contains(query) 
             }
             
-            var result = filtered.map { app -> AppItem in
-                if let customName = preferences.customAppNames[app.bundleIdentifier] {
-                    var modifiedApp = app
-                    modifiedApp.name = customName
-                    return modifiedApp
+            // ponytail: hide apps that are inside folders
+            let folderAppIDs = Set(folders.flatMap(\.appIDs))
+            
+            var result = filtered
+                .filter { !folderAppIDs.contains($0.id) }
+                .map { app -> AppItem in
+                    if let customName = preferences.customAppNames[app.bundleIdentifier] {
+                        var modifiedApp = app
+                        modifiedApp.name = customName
+                        return modifiedApp
+                    }
+                    return app
                 }
-                return app
-            }
             
             result.sort { app1, app2 in
                 let i1 = orderIndexMap[app1.id] ?? Int.max
@@ -51,7 +59,7 @@ struct AppGridFeature {
             appMap = Dictionary(uniqueKeysWithValues: apps.map { ($0.id, $0) })
         }
         
-        // 快速取得 folder 的 apps（O(n) 而非 O(n*m)）
+        // Get folder apps (O(n) via appMap)
         func getFolderApps(folderID: UUID) -> [AppItem] {
             guard let folder = folders.first(where: { $0.id == folderID }) else { return [] }
             
@@ -129,14 +137,20 @@ struct AppGridFeature {
                 return .none
                 
             case let .launchApp(app):
-                NSWorkspace.shared.open(app.path)
+                if !NSWorkspace.shared.open(app.path) {
+                    logger.error("Failed to launch: \(app.path.path, privacy: .public)")
+                }
                 return .none
                 
             case .reloadPreferences:
                 state.preferences = PreferencesStore.load()
+                state.folders = state.preferences.folders
+                state.appOrder = state.preferences.appOrder
                 state.rebuildOrderIndexMap()
                 state.updateDisplayedApps()
-                return .none
+                return .run { [showHidden = state.preferences.showHiddenApps] send in
+                    await send(.appsLoaded(await AppScanner.shared.scanApps(showHidden: showHidden)))
+                }
                 
             case .toggleEditMode:
                 state.isEditMode.toggle()
@@ -197,18 +211,35 @@ struct AppGridFeature {
                 return .none
                 
             case let .createFolder(name, appIDs):
-                let folder = Folder(name: name, appIDs: appIDs)
+                // ponytail: auto-uniquify "New Folder" so multiple creates don't collide
+                let finalName: String
+                if state.folders.contains(where: { $0.name == name }) {
+                    let count = state.folders.filter { $0.name.hasPrefix(name) }.count + 1
+                    finalName = "\(name) \(count)"
+                } else {
+                    finalName = name
+                }
+                let folder = Folder(name: finalName, appIDs: appIDs)
                 state.folders.append(folder)
+                state.updateDisplayedApps()
                 return .send(.savePreferences)
                 
             case let .renameFolder(id, name):
+                guard !name.trimmingCharacters(in: .whitespaces).isEmpty else { return .none }
                 if let idx = state.folders.firstIndex(where: { $0.id == id }) {
-                    state.folders[idx].name = name
+                    let trimmed = name.trimmingCharacters(in: .whitespaces)
+                    if state.folders.contains(where: { $0.name == trimmed && $0.id != id }) {
+                        let count = state.folders.filter { $0.name.hasPrefix(trimmed) }.count + 1
+                        state.folders[idx].name = "\(trimmed) \(count)"
+                    } else {
+                        state.folders[idx].name = trimmed
+                    }
                 }
                 return .send(.savePreferences)
                 
             case let .deleteFolder(id):
                 state.folders.removeAll { $0.id == id }
+                state.updateDisplayedApps()
                 if state.openFolderID == id {
                     state.openFolderID = nil
                 }
@@ -220,15 +251,18 @@ struct AppGridFeature {
                         state.folders[idx].appIDs.append(appID)
                     }
                 }
+                state.updateDisplayedApps()
                 return .send(.savePreferences)
                 
             case let .removeAppFromFolder(appID, folderID):
                 if let idx = state.folders.firstIndex(where: { $0.id == folderID }) {
                     state.folders[idx].appIDs.removeAll { $0 == appID }
                 }
+                state.updateDisplayedApps()
                 return .send(.savePreferences)
                 
             case let .renameApp(bundleIdentifier, newName):
+                guard !newName.trimmingCharacters(in: .whitespaces).isEmpty else { return .none }
                 state.preferences.customAppNames[bundleIdentifier] = newName
                 state.updateDisplayedApps()
                 return .send(.savePreferences)

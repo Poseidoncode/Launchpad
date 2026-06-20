@@ -72,7 +72,7 @@ open Package.swift
 | Create Empty Folder    | Click folder+ button in toolbar      |
 | Add App to Folder      | Drag an app onto an existing folder  |
 | Open Folder            | Click on the folder icon             |
-| Rename Folder          | Open folder → Click pencil icon      |
+| Rename Folder          | Open folder → Double-click name or right‑click → Rename      |
 | Remove App from Folder | Right-click app → Remove from Folder |
 | Delete Folder          | Right-click folder → Delete Folder   |
 | Exit Folder            | Press `ESC` or click the back button |
@@ -91,7 +91,7 @@ Click the `⇅` button in the toolbar to enter edit mode:
 | Shortcut  | Action                     |
 | --------- | -------------------------- |
 | `ESC`     | Clear search / Exit folder |
-| `Cmd + F` | Open search window         |
+| `Cmd + F` | Focus search bar            |
 | `Cmd + ,` | Open settings              |
 
 ## 🏗 Architecture Overview
@@ -102,11 +102,8 @@ Launchpad/
 │   └── LaunchpadApp.swift          # App entry point
 ├── Features/
 │   ├── AppGrid/
-│   │   ├── AppGridFeature.swift    # TCA Feature (state management)
-│   │   └── AppGridView.swift       # SwiftUI Views
-│   ├── Search/
-│   │   ├── SearchFeature.swift
-│   │   └── SearchView.swift
+│   │   ├── AppGridFeature.swift    # TCA Feature (state management, search, folders)
+│   │   └── AppGridView.swift       # SwiftUI Views (grid, items, folders, detail)
 │   └── Settings/
 │       ├── SettingsFeature.swift
 │       └── SettingsView.swift
@@ -116,9 +113,10 @@ Launchpad/
 │   └── UserPreferences.swift       # Settings persistence model
 ├── Services/
 │   ├── AppScanner.swift            # Scanning system applications
-│   └── FileSearcher.swift          # Spotlight API integration
+│   └── IconCache.swift             # Application icon caching and resizing
 └── Shared/
     └── Extensions/
+        └── PreferencesStore.swift  # UserDefaults persistence
 ```
 
 ## 🔧 Tech Stack
@@ -127,7 +125,7 @@ Launchpad/
 - **TCA (The Composable Architecture)** - Robust and testable state management
 - **Combine** - Reactive events handling
 - **FileManager** - System file operations
-- **Spotlight API** - High-performance file indexing
+- **IconCache** - Application icon caching and resizing
 - **NSWorkspace** - Application lifecycle and launching
 
 ## 🧪 Testing
