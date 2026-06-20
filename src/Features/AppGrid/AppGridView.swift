@@ -8,13 +8,13 @@ struct AppGridView: View {
     @State private var draggingApp: AppItem?
     
     private var gridColumns: [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: 8), count: 13)
+        Array(repeating: GridItem(.flexible(), spacing: 8), count: max(store.preferences.columns, 1))
     }
     
     var body: some View {
         ZStack(alignment: .bottom) {
-            // Full window vibrancy background
-            VisualEffectView(material: .fullScreenUI, blendingMode: .behindWindow)
+            Color.clear
+                .background(.ultraThinMaterial)
                 .ignoresSafeArea()
             
             VStack(spacing: 0) {
@@ -138,6 +138,9 @@ struct AppGridView: View {
         .frame(minWidth: 900, minHeight: 600)
         .preferredColorScheme(.dark)
         .onAppear { store.send(.onAppear) }
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+            store.send(.reloadPreferences)
+        }
         .onKeyPress(.escape) {
             if store.isEditMode { 
                 store.send(.toggleEditMode)
@@ -463,7 +466,9 @@ struct FolderDetailView: View {
     @State private var isEditingName = false
     @State private var editedName = ""
     
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 6)
+    private var columns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: 8), count: max(store.preferences.columns, 1))
+    }
     
     private var folder: Folder? {
         store.folders.first(where: { $0.id == folderID })
@@ -642,21 +647,6 @@ struct ToolbarButton: View {
         .onHover { isHovered = $0 }
         .animation(.easeInOut(duration: 0.15), value: isHovered)
     }
-}
-
-struct VisualEffectView: NSViewRepresentable {
-    let material: NSVisualEffectView.Material
-    let blendingMode: NSVisualEffectView.BlendingMode
-    
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let v = NSVisualEffectView()
-        v.material = material
-        v.blendingMode = blendingMode
-        v.state = .active
-        v.appearance = NSAppearance(named: .darkAqua)
-        return v
-    }
-    func updateNSView(_ v: NSVisualEffectView, context: Context) {}
 }
 
 struct WindowDragBlocker: NSViewRepresentable {

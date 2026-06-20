@@ -17,7 +17,7 @@ struct AppGridFeature {
         
         private(set) var displayedApps: [AppItem] = []
         private var orderIndexMap: [UUID: Int] = [:]
-        private(set) var appMap: [UUID: AppItem] = [:] // 改為 internal，讓 View 可以存取
+        var appMap: [UUID: AppItem] = [:]
         
         mutating func updateDisplayedApps() {
             let query = searchQuery.lowercased()
@@ -85,6 +85,7 @@ struct AppGridFeature {
         case removeAppFromFolder(appID: UUID, folderID: UUID)
         case renameApp(bundleIdentifier: String, newName: String)
         case savePreferences
+        case reloadPreferences
         case reloadApps
     }
     
@@ -98,26 +99,24 @@ struct AppGridFeature {
                 state.appOrder = state.preferences.appOrder
                 state.rebuildOrderIndexMap()
                 
-                // 背景加載應用列表，避免阻塞 UI
-                return .run { send in
-                    await send(.appsLoaded(await AppScanner.shared.scanApps()))
+                return .run { [showHidden = state.preferences.showHiddenApps] send in
+                    await send(.appsLoaded(await AppScanner.shared.scanApps(showHidden: showHidden)))
                 }
                 
             case let .appsLoaded(apps):
                 state.isLoading = false
                 state.apps = apps
-                state.rebuildAppMap() // 建立 ID 映射
-                
-                #if DEBUG
-                print("[appsLoaded] Total apps: \(apps.count)")
-                print("[appsLoaded] App IDs sample: \(apps.prefix(3).map { $0.id })")
-                print("[appsLoaded] Folders before: \(state.folders.map { "\($0.name): \($0.appIDs.count) apps" })")
-                #endif
+                state.rebuildAppMap()
                 
                 let currentIDs = Set(apps.map(\.id))
                 let orderedExistingIDs = state.appOrder.filter { currentIDs.contains($0) }
                 let missingIDs = apps.map(\.id).filter { !orderedExistingIDs.contains($0) }
                 let normalizedOrder = orderedExistingIDs + missingIDs
+                
+                // Clean up stale app IDs from folders
+                for idx in state.folders.indices {
+                    state.folders[idx].appIDs = state.folders[idx].appIDs.filter { currentIDs.contains($0) }
+                }
                 
                 if normalizedOrder != state.appOrder {
                     state.appOrder = normalizedOrder
@@ -126,20 +125,17 @@ struct AppGridFeature {
                     return .send(.savePreferences)
                 }
                 
-                #if DEBUG
-                print("[appsLoaded] appMap keys count: \(state.appMap.count)")
-                if let firstFolder = state.folders.first {
-                    print("[appsLoaded] First folder appIDs: \(firstFolder.appIDs)")
-                    let found = firstFolder.appIDs.compactMap { state.appMap[$0] }.count
-                    print("[appsLoaded] Found in appMap: \(found)/\(firstFolder.appIDs.count)")
-                }
-                #endif
-                
                 state.updateDisplayedApps()
                 return .none
                 
             case let .launchApp(app):
                 NSWorkspace.shared.open(app.path)
+                return .none
+                
+            case .reloadPreferences:
+                state.preferences = PreferencesStore.load()
+                state.rebuildOrderIndexMap()
+                state.updateDisplayedApps()
                 return .none
                 
             case .toggleEditMode:
@@ -190,19 +186,9 @@ struct AppGridFeature {
                 return .none
                 
             case let .openFolder(id):
-                // 強制確保 appMap 已經建立
                 if state.appMap.isEmpty && !state.apps.isEmpty {
                     state.rebuildAppMap()
                 }
-                #if DEBUG
-                print("[openFolder] openFolderID: \(id)")
-                print("[openFolder] appMap count: \(state.appMap.count)")
-                if let folder = state.folders.first(where: { $0.id == id }) {
-                    print("[openFolder] folder appIDs: \(folder.appIDs)")
-                    let found = folder.appIDs.filter { state.appMap[$0] != nil }.count
-                    print("[openFolder] found in appMap: \(found)/\(folder.appIDs.count)")
-                }
-                #endif
                 state.openFolderID = id
                 return .none
                 
@@ -261,8 +247,8 @@ struct AppGridFeature {
                 
             case .reloadApps:
                 state.isLoading = true
-                return .run { send in
-                    let apps = await AppScanner.shared.scanApps(forceRefresh: true)
+                return .run { [showHidden = state.preferences.showHiddenApps] send in
+                    let apps = await AppScanner.shared.scanApps(showHidden: showHidden, forceRefresh: true)
                     await send(.appsLoaded(apps))
                 }
             }

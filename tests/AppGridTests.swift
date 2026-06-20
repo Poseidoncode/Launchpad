@@ -112,8 +112,7 @@ final class AppGridTests: XCTestCase {
             id: id,
             name: name,
             bundleIdentifier: "com.test.\(name.lowercased())",
-            path: URL(fileURLWithPath: "/Applications/\(name).app"),
-            isFolder: false
+            path: URL(fileURLWithPath: "/Applications/\(name).app")
         )
     }
 }

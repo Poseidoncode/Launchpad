@@ -5,7 +5,6 @@ final class IconCache {
     static let shared = IconCache()
     
     private let cache = NSCache<NSString, NSImage>()
-    private let lock = NSLock()
     
     private init() {
         cache.countLimit = 500
@@ -14,9 +13,6 @@ final class IconCache {
     
     func icon(for path: String, desiredSize: NSSize = NSSize(width: 64, height: 64)) -> NSImage? {
         let key = "\(path)_\(Int(desiredSize.width))x\(Int(desiredSize.height))" as NSString
-        
-        lock.lock()
-        defer { lock.unlock() }
         
         if let cached = cache.object(forKey: key) {
             return cached
@@ -33,22 +29,7 @@ final class IconCache {
         return icon
     }
     
-    func preload(paths: [String]) async {
-        // 限制預加載的數量以提高性能
-        let limitedPaths = Array(paths.prefix(50)) // 只預加載前50個圖示
-        
-        await withTaskGroup(of: Void.self) { group in
-            for path in limitedPaths {
-                group.addTask {
-                    _ = self.icon(for: path)
-                }
-            }
-        }
-    }
-    
     func clear() {
-        lock.lock()
-        defer { lock.unlock() }
         cache.removeAllObjects()
     }
 }
