@@ -338,12 +338,8 @@ struct AppGridItem: View {
             }
             Divider()
             Button("Move to Trash") {
-                do {
-                    try NSWorkspace.shared.recycle([app.path])
-                    store.send(.reloadApps)
-                } catch {
-                    logger.error("Failed to move to trash: \(error.localizedDescription, privacy: .public)")
-                }
+                NSWorkspace.shared.recycle([app.path])
+                store.send(.reloadApps)
             }
         }
         // Drag support - using onDrag for macOS

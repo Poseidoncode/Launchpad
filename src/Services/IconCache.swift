@@ -15,11 +15,10 @@ final class IconCache {
     
     func icon(for path: String, desiredSize: NSSize = NSSize(width: 64, height: 64)) async -> NSImage? {
         let key = "\(path)_\(Int(desiredSize.width))x\(Int(desiredSize.height))"
-        let nsKey = key as NSString
         
         // ponytail: double-check with lock — concurrent requests for the same key
         // may both generate, but only one result is cached and the extra work is negligible
-        if let cached = lock.withLock({ cache.object(forKey: nsKey) }) {
+        if let cached = lock.withLock({ cache.object(forKey: key as NSString) }) {
             return cached
         }
         
@@ -29,7 +28,7 @@ final class IconCache {
         
         if icon.size == desiredSize {
             let cost = Int(icon.size.width * icon.size.height * 4)
-            lock.withLock { cache.setObject(icon, forKey: nsKey, cost: cost) }
+            lock.withLock { cache.setObject(icon, forKey: key as NSString, cost: cost) }
             return icon
         }
         
@@ -38,7 +37,7 @@ final class IconCache {
         }.value
         
         let cost = Int(resized.size.width * resized.size.height * 4)
-        lock.withLock { cache.setObject(resized, forKey: nsKey, cost: cost) }
+        lock.withLock { cache.setObject(resized, forKey: key as NSString, cost: cost) }
         return resized
     }
     
