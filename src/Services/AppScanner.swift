@@ -26,8 +26,7 @@ actor AppScanner {
     private init() {
         // On macOS, use DispatchSource for memory pressure notifications
         let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
-        source.setEventHandler { [weak self] in
-            guard let self else { return }
+        source.setEventHandler { [self] in
             let event = source.data
             if event.contains(.warning) || event.contains(.critical) {
                 scanLogger.warning("Memory pressure detected — clearing caches")
@@ -51,14 +50,13 @@ actor AppScanner {
             return cachedApps
         }
         
-        // #1 FIX: If a scan is already in progress, wait with cancellation support
+        // #1 FIX: If a scan is already in progress, wait for result
+        // NOTE: The showHidden parameter is not propagated to waiters — they receive the result
+        // of the in-progress scan regardless of their showHidden request. This is acceptable
+        // for a launcher app with a single UI toggle, but would need refinement for library use.
         if isScanning {
-            return await withTaskCancellationHandler {
-                await withCheckedContinuation { continuation in
-                    scanContinuations.append(continuation)
-                }
-            } onCancel: { [self] in
-                Task { await self.cancelWaiters() }
+            return await withCheckedContinuation { continuation in
+                scanContinuations.append(continuation)
             }
         }
         
@@ -83,13 +81,7 @@ actor AppScanner {
         return deduped
     }
     
-    private func cancelWaiters() {
-        let waiters = scanContinuations
-        scanContinuations.removeAll()
-        for continuation in waiters {
-            continuation.resume(returning: [])
-        }
-    }
+
     
     private nonisolated func performScan(showHidden: Bool) async -> [AppItem] {
         var apps: [AppItem] = []
@@ -100,11 +92,22 @@ actor AppScanner {
             
             let contents = (try? fileManager.contentsOfDirectory(
                 at: path,
-                includingPropertiesForKeys: [.isApplicationKey],
+                includingPropertiesForKeys: [.isApplicationKey, .isSymbolicLinkKey],
                 options: showHidden ? [] : [.skipsHiddenFiles]
             )) ?? []
             
-            let appURLs = contents.filter { $0.pathExtension == "app" }
+            // Filter to .app bundles and skip symlinks (path traversal hardening)
+            let appURLs = contents.filter { url in
+                guard url.pathExtension == "app" else { return false }
+                do {
+                    let resourceValues = try url.resourceValues(forKeys: [.isSymbolicLinkKey])
+                    return resourceValues.isSymbolicLink == false
+                } catch {
+                    // Fail-closed: exclude URLs we cannot verify
+                    scanLogger.warning("Could not check symlink status for \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                    return false
+                }
+            }
             
             // #3 FIX: Bounded concurrency — limit to 8 concurrent tasks instead of unbounded
             let items = await withTaskGroup(of: AppItem?.self, returning: [AppItem].self) { group in

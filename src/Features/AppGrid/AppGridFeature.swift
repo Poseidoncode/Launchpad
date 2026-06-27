@@ -60,14 +60,6 @@ struct AppGridFeature {
             appMap = Dictionary(uniqueKeysWithValues: apps.map { ($0.id, $0) })
         }
         
-        // #8 FIX: Use reverse lookup for O(1) per ID
-        mutating func updateOrderIndices(for ids: [UUID]) {
-            let lookup = Dictionary(uniqueKeysWithValues: appOrder.enumerated().map { ($0.element, $0.offset) })
-            for id in ids {
-                orderIndexMap[id] = lookup[id]
-            }
-        }
-        
         // Get folder apps (O(n) via appMap)
         func getFolderApps(folderID: UUID) -> [AppItem] {
             guard let folder = folders.first(where: { $0.id == folderID }) else { return [] }

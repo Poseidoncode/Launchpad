@@ -7,10 +7,8 @@ private let cacheLogger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com
 actor IconCache {
     static let shared = IconCache()
     
-    // #2 FIX: NSCache is not Sendable. Actor isolation alone doesn't protect against
-    // reentrancy during suspension points (MainActor.run). Add explicit lock.
+    // Actor isolation serializes all access to NSCache — no additional lock needed.
     private let cache = NSCache<NSString, NSImage>()
-    private let cacheLock = NSLock()
     
     private init() {
         cache.countLimit = 500
@@ -22,8 +20,8 @@ actor IconCache {
     func icon(for path: String, desiredSize: NSSize = NSSize(width: 64, height: 64)) async -> NSImage? {
         let key = "\(path)_\(Int(desiredSize.width))x\(Int(desiredSize.height))"
         
-        // #2 FIX: Lock around NSCache access to prevent data races during actor reentrancy
-        if let cached = cacheLock.withLock({ cache.object(forKey: key as NSString) }) {
+        // Actor isolation protects against data races — no lock needed
+        if let cached = cache.object(forKey: key as NSString) {
             return cached
         }
         
@@ -33,7 +31,7 @@ actor IconCache {
         
         if icon.size == desiredSize {
             let cost = estimateCost(for: icon)
-            cacheLock.withLock { cache.setObject(icon, forKey: key as NSString, cost: cost) }
+            cache.setObject(icon, forKey: key as NSString, cost: cost)
             return icon
         }
         
@@ -42,7 +40,7 @@ actor IconCache {
         }.value
         
         let cost = estimateCost(for: resized)
-        cacheLock.withLock { cache.setObject(resized, forKey: key as NSString, cost: cost) }
+        cache.setObject(resized, forKey: key as NSString, cost: cost)
         return resized
     }
     
@@ -55,7 +53,7 @@ actor IconCache {
     }
     
     func clear() {
-        cacheLock.withLock { cache.removeAllObjects() }
+        cache.removeAllObjects()
     }
 }
 
@@ -63,10 +61,39 @@ extension NSImage {
     func resized(to targetSize: NSSize) -> NSImage? {
         guard self.size != targetSize else { return self }
         
-        // Drawing handler instead of deprecated lockFocus API
-        return NSImage(size: targetSize, flipped: false) { [self] _ in
-            self.draw(in: NSRect(origin: .zero, size: targetSize))
-            return true
-        }
+        // Render into a fixed bitmap to avoid retaining the original NSImage
+        // via a drawingHandler closure (which would hold the full-size image alive)
+        let w = max(1, Int(targetSize.width))
+        let h = max(1, Int(targetSize.height))
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: w,
+            pixelsHigh: h,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else { return nil }
+        
+        // Use CGContext directly (thread-safe) instead of NSGraphicsContext (process-global)
+        guard let context = CGContext(
+            data: rep.bitmapData,
+            width: w,
+            height: h,
+            bitsPerComponent: 8,
+            bytesPerRow: rep.bytesPerRow,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        
+        guard let cgImage = self.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        context.draw(cgImage, in: CGRect(origin: .zero, size: targetSize))
+        
+        let image = NSImage(size: targetSize)
+        image.addRepresentation(rep)
+        return image
     }
 }

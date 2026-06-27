@@ -2,6 +2,9 @@ import SwiftUI
 import ComposableArchitecture
 import AppKit
 import UniformTypeIdentifiers
+import OSLog
+
+private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.poseidoncode.launchpad", category: "app-grid")
 
 struct AppGridView: View {
     @Bindable var store: StoreOf<AppGridFeature>
@@ -332,8 +335,14 @@ struct AppGridItem: View {
             }
             Divider()
             Button("Move to Trash") {
-                NSWorkspace.shared.recycle([app.path])
-                store.send(.reloadApps)
+                do {
+                    try FileManager.default.trashItem(at: app.path, resultingItemURL: nil)
+                    store.send(.reloadApps)
+                } catch {
+                    // Log full error privately, show safe message to user
+                    logger.error("Trash failed for \(app.path.path, privacy: .private): \(error.localizedDescription, privacy: .public)")
+                    store.send(.setErrorMessage("Could not move \"\(app.name)\" to Trash. Check file permissions."))
+                }
             }
         }
         // Drag support - using onDrag for macOS
