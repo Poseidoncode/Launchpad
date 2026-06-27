@@ -115,15 +115,33 @@ final class UserPreferencesTests: XCTestCase {
 }
 
 final class PreferencesStoreTests: XCTestCase {
-    private let testSuite = "com.launchpad.tests"
+    private static let prefsKey = "LaunchpadUserPreferences"
+    private static let stagingKey = "LaunchpadUserPreferences_staging"
+    
+    // Save original values so we can restore them after each test
+    private var originalPrefs: Any?
+    private var originalStaging: Any?
 
     override func setUp() {
         super.setUp()
-        UserDefaults.standard.removePersistentDomain(forName: testSuite)
+        originalPrefs = UserDefaults.standard.object(forKey: Self.prefsKey)
+        originalStaging = UserDefaults.standard.object(forKey: Self.stagingKey)
+        UserDefaults.standard.removeObject(forKey: Self.prefsKey)
+        UserDefaults.standard.removeObject(forKey: Self.stagingKey)
     }
 
     override func tearDown() {
-        UserDefaults.standard.removePersistentDomain(forName: testSuite)
+        // Restore original values to avoid polluting the developer's real preferences
+        if let originalPrefs {
+            UserDefaults.standard.set(originalPrefs, forKey: Self.prefsKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.prefsKey)
+        }
+        if let originalStaging {
+            UserDefaults.standard.set(originalStaging, forKey: Self.stagingKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.stagingKey)
+        }
         super.tearDown()
     }
 
@@ -137,9 +155,7 @@ final class PreferencesStoreTests: XCTestCase {
     }
 
     func testLoadDefaultsWhenNoData() {
-        // Clear both keys
-        UserDefaults.standard.removeObject(forKey: "LaunchpadUserPreferences")
-        UserDefaults.standard.removeObject(forKey: "LaunchpadUserPreferences_staging")
+        // Both keys already cleared in setUp
         let loaded = PreferencesStore.load()
         XCTAssertEqual(loaded, UserPreferences.default)
     }
@@ -149,7 +165,7 @@ final class PreferencesStoreTests: XCTestCase {
         PreferencesStore.save(prefs)
 
         // Simulate corrupting the real key
-        UserDefaults.standard.set(Data(), forKey: "LaunchpadUserPreferences")
+        UserDefaults.standard.set(Data(), forKey: Self.prefsKey)
 
         let loaded = PreferencesStore.load()
         XCTAssertEqual(loaded.iconSize, 128, "Should recover from staging key")

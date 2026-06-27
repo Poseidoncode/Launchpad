@@ -3,7 +3,7 @@ import Foundation
 import AppKit
 import OSLog
 
-private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.launchpad.app", category: "app-grid")
+private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.poseidoncode.launchpad", category: "app-grid")
 
 @Reducer
 struct AppGridFeature {
@@ -20,7 +20,7 @@ struct AppGridFeature {
         var preferences: UserPreferences = .default
         
         private(set) var displayedApps: [AppItem] = []
-        private var orderIndexMap: [UUID: Int] = [:]
+        var orderIndexMap: [UUID: Int] = [:]
         private(set) var appMap: [UUID: AppItem] = [:]
         
         mutating func updateDisplayedApps() {
@@ -29,7 +29,7 @@ struct AppGridFeature {
                 $0.name.lowercased().contains(query) 
             }
             
-            // ponytail: hide apps that are inside folders
+            // hide apps that are inside folders
             let folderAppIDs = Set(folders.flatMap(\.appIDs))
             
             var result = filtered
@@ -60,10 +60,11 @@ struct AppGridFeature {
             appMap = Dictionary(uniqueKeysWithValues: apps.map { ($0.id, $0) })
         }
         
-        // ponytail: incremental update — O(1) per affected ID instead of O(n) full rebuild
+        // #8 FIX: Use reverse lookup for O(1) per ID
         mutating func updateOrderIndices(for ids: [UUID]) {
+            let lookup = Dictionary(uniqueKeysWithValues: appOrder.enumerated().map { ($0.element, $0.offset) })
             for id in ids {
-                orderIndexMap[id] = appOrder.firstIndex(of: id)
+                orderIndexMap[id] = lookup[id]
             }
         }
         
@@ -88,6 +89,7 @@ struct AppGridFeature {
         case onAppear
         case appsLoaded([AppItem])
         case launchApp(AppItem)
+        case launchResult(Bool, String)
         case toggleEditMode
         case swapApps(id: UUID, with: UUID)
         case moveApp(id: UUID, after: UUID)
@@ -147,9 +149,15 @@ struct AppGridFeature {
                 return .none
                 
             case let .launchApp(app):
-                if !NSWorkspace.shared.open(app.path) {
-                    logger.error("Failed to launch: \(app.path.path, privacy: .public)")
-                    return .send(.setErrorMessage("Could not launch \(app.name)"))
+                return .run { send in
+                    let success = NSWorkspace.shared.open(app.path)
+                    await send(.launchResult(success, app.name))
+                }
+                
+            case let .launchResult(success, appName):
+                if !success {
+                    logger.error("Failed to launch: \(appName, privacy: .public)")
+                    return .send(.setErrorMessage("Could not launch \(appName)"))
                 }
                 return .none
                 
@@ -168,33 +176,31 @@ struct AppGridFeature {
                 return .none
                 
             case let .swapApps(id, withID):
-                guard let i1 = state.appOrder.firstIndex(of: id),
-                      let i2 = state.appOrder.firstIndex(of: withID),
-                      i1 != i2 else { 
-                    return .none 
+                guard let i1 = state.orderIndexMap[id],
+                      let i2 = state.orderIndexMap[withID],
+                      i1 != i2 else {
+                    return .none
                 }
                 
                 state.appOrder.swapAt(i1, i2)
-                state.updateOrderIndices(for: [id, withID])
+                state.orderIndexMap[id] = i2
+                state.orderIndexMap[withID] = i1
                 state.updateDisplayedApps()
                 return .send(.savePreferences)
 
             case let .moveApp(id, after: targetID):
-                guard let fromIndex = state.appOrder.firstIndex(of: id),
-                      state.appOrder.contains(targetID),
+                // #9 FIX: Use orderIndexMap for O(1) lookups instead of 3 linear scans
+                guard let fromIndex = state.orderIndexMap[id],
+                      let toIndex = state.orderIndexMap[targetID],
                       id != targetID else {
                     return .none
                 }
 
                 var updatedOrder = state.appOrder
                 updatedOrder.remove(at: fromIndex)
-
-                guard let adjustedTargetIndex = updatedOrder.firstIndex(of: targetID) else {
-                    return .none
-                }
-
-                let insertionIndex = adjustedTargetIndex + 1
-                updatedOrder.insert(id, at: insertionIndex)
+                // Only adjust target index when moving forward (target shifts left after removal)
+                let adjustedTarget = (fromIndex < toIndex) ? toIndex - 1 : toIndex
+                updatedOrder.insert(id, at: adjustedTarget + 1)
 
                 if updatedOrder == state.appOrder {
                     return .none
@@ -222,7 +228,7 @@ struct AppGridFeature {
                 return .none
                 
             case let .createFolder(name, appIDs):
-                // ponytail: auto-uniquify "New Folder" so multiple creates don't collide
+                // auto-uniquify "New Folder" so multiple creates don't collide
                 let finalName: String
                 if state.folders.contains(where: { $0.name == name }) {
                     let count = state.folders.filter { $0.name.hasPrefix(name) }.count + 1
@@ -287,7 +293,7 @@ struct AppGridFeature {
                 return .none
                 
             case .savePreferences:
-                // ponytail: debounced 300ms — rapid drag operations batch into one write
+                // debounced 300ms — rapid drag operations batch into one write
                 let prefs = UserPreferences(
                     appOrder: state.appOrder,
                     folders: state.folders,
@@ -299,7 +305,10 @@ struct AppGridFeature {
                 return .run { _ in
                     try await Task.sleep(nanoseconds: 300_000_000)
                     PreferencesStore.save(prefs)
-                } catch: { _, _ in }
+                } catch: { error, _ in
+                    if error is CancellationError { return }
+                    logger.error("Preferences save failed: \(error, privacy: .public)")
+                }
                 .cancellable(id: "prefs-save", cancelInFlight: true)
                 
             case .reloadApps:

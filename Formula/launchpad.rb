@@ -32,7 +32,7 @@ class Launchpad < Formula
         <key>CFBundleExecutable</key>
         <string>#{app_name}</string>
         <key>CFBundleIdentifier</key>
-        <string>com.launchpad.app</string>
+        <string>com.poseidoncode.launchpad</string>
         <key>CFBundleName</key>
         <string>#{app_name}</string>
         <key>CFBundlePackageType</key>

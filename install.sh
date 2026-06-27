@@ -10,7 +10,7 @@ if [ ! -f "Package.swift" ]; then
     echo "📦 Cloning ${APP_NAME}..."
     git clone --depth 1 "$REPO_URL" "$TMPDIR"
     cd "$TMPDIR"
-    trap "rm -rf '$TMPDIR'" EXIT
+    trap "rm -rf \"$TMPDIR\"" EXIT
 fi
 
 echo "🚀 Installing ${APP_NAME}..."

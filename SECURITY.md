@@ -11,7 +11,7 @@
 ### What This App Does
 
 Launchpad is a native macOS app that scans system application directories (`/Applications`,
-`/System/Applications`, `~/Applications`) and displays them in a grid UI. It stores
+`/System/Applications`, `/System/Applications/Utilities`, `~/Applications`) and displays them in a grid UI. It stores
 user preferences (folder layout, custom app names) in `UserDefaults` only — **no
 network access, no telemetry, no analytics**.
 
@@ -29,7 +29,11 @@ network access, no telemetry, no analytics**.
 Launchpad runs inside the macOS App Sandbox with these entitlements:
 
 - `com.apple.security.app-sandbox` — Sandbox enabled
-- `com.apple.security.files.user-selected.read-only` — Read files the user picks
+
+> **Note:** The Homebrew formula (`brew install`) builds without sandbox or codesigning
+> (it uses `--disable-sandbox` for SPM's build sandbox only, and does not apply codesign).
+> Sandboxing is only applied when using the curl installer (`build-app.sh`) which codesigns
+> with entitlements. Both installation paths produce functionally identical binaries.
 
 ### Dependencies
 

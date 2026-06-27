@@ -2,14 +2,10 @@ import SwiftUI
 import ComposableArchitecture
 import AppKit
 import UniformTypeIdentifiers
-import OSLog
-
-private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.launchpad.app", category: "app-grid-view")
 
 struct AppGridView: View {
     @Bindable var store: StoreOf<AppGridFeature>
     @State private var draggingApp: AppItem?
-    @State private var lastPrefData: Data?
     @FocusState private var isSearchFocused: Bool
     
     private var gridColumns: [GridItem] {
@@ -134,13 +130,12 @@ struct AppGridView: View {
                             ForEach(store.folders) { folder in
                                 FolderGridItem(
                                     folder: folder,
-                                    allApps: store.apps,
                                     preferences: store.preferences,
                                     store: store,
                                     isEditMode: store.isEditMode
                                 )
                             }
-                            // Apps - Adding explicit ID to ensure proper view updates when order changes
+                            // Apps
                             ForEach(store.displayedApps, id: \.id) { app in
                                 AppGridItem(
                                     app: app,
@@ -172,10 +167,7 @@ struct AppGridView: View {
         .frame(minWidth: 900, minHeight: 600)
         .preferredColorScheme(.dark)
         .onAppear { store.send(.onAppear) }
-        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification).debounce(for: .seconds(0.3), scheduler: DispatchQueue.main)) { _ in
-            let currentData = UserDefaults.standard.data(forKey: "LaunchpadUserPreferences")
-            guard currentData != nil, currentData != lastPrefData else { return }
-            lastPrefData = currentData
+        .onReceive(NotificationCenter.default.publisher(for: .launchpadPreferencesDidChange)) { _ in
             store.send(.reloadPreferences)
         }
         .onKeyPress(.escape) {
@@ -205,7 +197,7 @@ struct AppGridView: View {
             }
         }
         .animation(.easeOut(duration: 0.16), value: store.openFolderID)
-        // Error banner
+        // Error banner — uses cancellable timer via store
         .overlay(alignment: .top) {
             if let error = store.errorMessage {
                 HStack(spacing: 10) {
@@ -230,15 +222,14 @@ struct AppGridView: View {
                 .padding(.horizontal, 40)
                 .padding(.top, 8)
                 .transition(.move(edge: .top).combined(with: .opacity))
-                .onAppear {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
-                        store.send(.dismissError)
-                    }
+                .task(id: error) {
+                    try? await Task.sleep(for: .seconds(4))
+                    store.send(.dismissError)
                 }
             }
         }
         .animation(.easeOut(duration: 0.2), value: store.errorMessage != nil)
-        // ponytail: invisible button attached to main content for Cmd+F focus
+        // invisible button attached to main content for Cmd+F focus
         .background {
             Button("") { isSearchFocused = true }
                 .keyboardShortcut("f", modifiers: .command)
@@ -320,6 +311,9 @@ struct AppGridItem: View {
         }
         .frame(width: iconSize + 20)
         .contentShape(Rectangle())
+        .accessibilityLabel(app.name)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint("Double-click to launch")
         .onHover { isHovered = $0 }
         .onTapGesture {
             if !isEditMode {
@@ -364,15 +358,14 @@ struct AppGridItem: View {
         }
         // Drop support
         .onDrop(of: [UTType.text], isTargeted: $isCurrentDropTarget) { providers in
-            guard let provider = providers.first else { return false }
+            guard let provider = providers.first else { 
+                resetDragState()
+                return false 
+            }
             
             provider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { item, _ in
                 DispatchQueue.main.async {
-                    defer { 
-                        onDragEnd()
-                        isDraggingLocal = false
-                        isCurrentDropTarget = false
-                    }
+                    defer { resetDragState() }
                     
                     guard let draggedIDStr = draggedIDString(from: item),
                           let draggedID = UUID(uuidString: draggedIDStr),
@@ -386,6 +379,12 @@ struct AppGridItem: View {
                 }
             }
             return true
+        }
+        .onChange(of: isCurrentDropTarget) { _, newValue in
+            // Reset drag state when drop target changes away
+            if !newValue && !hasActiveDrag {
+                isDraggingLocal = false
+            }
         }
         .sheet(isPresented: $showRenameSheet) {
             VStack(spacing: 16) {
@@ -415,13 +414,18 @@ struct AppGridItem: View {
             .frame(width: 280)
         }
     }
+    
+    private func resetDragState() {
+        onDragEnd()
+        isDraggingLocal = false
+        isCurrentDropTarget = false
+    }
 }
 
 // MARK: - Folder Grid Item
 
 struct FolderGridItem: View {
     let folder: Folder
-    let allApps: [AppItem]
     let preferences: UserPreferences
     let store: StoreOf<AppGridFeature>
     let isEditMode: Bool
@@ -432,8 +436,16 @@ struct FolderGridItem: View {
     @State private var newFolderName = ""
     
     var previewApps: [AppItem] {
-        // O(1) lookup via appMap
-        folder.appIDs.prefix(4).compactMap { store.appMap[$0] }
+        // O(1) lookup via appMap, with custom names applied
+        folder.appIDs.prefix(4).compactMap { id -> AppItem? in
+            guard let app = store.appMap[id] else { return nil }
+            if let customName = store.preferences.customAppNames[app.bundleIdentifier] {
+                var modified = app
+                modified.name = customName
+                return modified
+            }
+            return app
+        }
     }
     
     var body: some View {
@@ -480,6 +492,8 @@ struct FolderGridItem: View {
                 .frame(width: preferences.iconSize + 12)
         }
         .frame(width: preferences.iconSize + 20)
+        .accessibilityLabel("\(folder.name), \(folder.appIDs.count) apps")
+        .accessibilityAddTraits(.isButton)
         .onHover { isHovered = $0 }
         .onTapGesture { store.send(.openFolder(folder.id)) }
         .contextMenu {
@@ -544,7 +558,6 @@ struct FolderDetailView: View {
     
     @State private var isEditingName = false
     @State private var editedName = ""
-    @State private var folderApps: [AppItem] = []
     @State private var folderSearchQuery = ""
     
     private var columns: [GridItem] {
@@ -555,11 +568,27 @@ struct FolderDetailView: View {
         store.folders.first(where: { $0.id == folderID })
     }
     
-
+    // Computed from store state — always fresh, no stale @State copies
+    private var folderApps: [AppItem] {
+        guard let folder else { return [] }
+        return folder.appIDs.compactMap { id -> AppItem? in
+            guard let app = store.appMap[id] else { return nil }
+            if let customName = store.preferences.customAppNames[app.bundleIdentifier] {
+                var modifiedApp = app
+                modifiedApp.name = customName
+                return modifiedApp
+            }
+            return app
+        }
+    }
     
     var body: some View {
         Group {
             if let folder {
+                let filteredApps = folderSearchQuery.isEmpty
+                    ? folderApps
+                    : folderApps.filter { $0.name.localizedCaseInsensitiveContains(folderSearchQuery) }
+                
                 VStack(spacing: 0) {
                     // Header
                     HStack {
@@ -573,6 +602,7 @@ struct FolderDetailView: View {
                             .font(.system(size: 13))
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("Close folder")
                         
                         Spacer()
                         
@@ -647,10 +677,6 @@ struct FolderDetailView: View {
                     .padding(.top, 8)
                     
                     ScrollView(.vertical, showsIndicators: false) {
-                        let filteredApps = folderSearchQuery.isEmpty
-                            ? folderApps
-                            : folderApps.filter { $0.name.localizedCaseInsensitiveContains(folderSearchQuery) }
-                        
                         if filteredApps.isEmpty && !folderSearchQuery.isEmpty {
                             VStack(spacing: 12) {
                                 Image(systemName: "magnifyingglass")
@@ -697,6 +723,7 @@ struct FolderDetailView: View {
                                     .contentShape(Rectangle())
                                     .accessibilityLabel(app.name)
                                     .accessibilityAddTraits(.isButton)
+                                    .accessibilityHint("Double-click to launch")
                                     .onTapGesture {
                                         store.send(.launchApp(app))
                                     }
@@ -714,7 +741,7 @@ struct FolderDetailView: View {
                         }
                     }
                 }
-                .frame(width: 620, height: 430)
+                .frame(minWidth: 500, idealWidth: 620, minHeight: 350, idealHeight: 430)
                 .background(
                     RoundedRectangle(cornerRadius: 28, style: .continuous)
                         .fill(Color(red: 0.15, green: 0.15, blue: 0.16).opacity(0.96))
@@ -726,28 +753,11 @@ struct FolderDetailView: View {
                 .shadow(color: .black.opacity(0.35), radius: 24, y: 12)
                 .contentShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
                 .background(WindowDragBlocker())
-                .onAppear { folderApps = computeFolderApps() }
-                .onChange(of: store.folders) { _, _ in
-                    folderApps = computeFolderApps()
-                }
             } else {
                 Color.clear
                     .frame(width: 1, height: 1)
                     .onAppear { store.send(.closeFolder) }
             }
-        }
-    }
-    
-    private func computeFolderApps() -> [AppItem] {
-        guard let folder else { return [] }
-        return folder.appIDs.compactMap { id -> AppItem? in
-            guard let app = store.appMap[id] else { return nil }
-            if let customName = store.preferences.customAppNames[app.bundleIdentifier] {
-                var modifiedApp = app
-                modifiedApp.name = customName
-                return modifiedApp
-            }
-            return app
         }
     }
 }

@@ -10,10 +10,7 @@ struct SettingsView: View {
                 HStack {
                     Text("Icon Size")
                     Slider(
-                        value: Binding(
-                            get: { store.preferences.iconSize },
-                            set: { store.send(.setIconSize($0)) }
-                        ),
+                        value: $store.preferences.iconSize.sending(\.setIconSize),
                         in: 48...128,
                         step: 8
                     )
@@ -23,10 +20,7 @@ struct SettingsView: View {
                 
                 Stepper(
                     "Columns: \(store.preferences.columns)",
-                    value: Binding(
-                        get: { store.preferences.columns },
-                        set: { store.send(.setColumns($0)) }
-                    ),
+                    value: $store.preferences.columns.sending(\.setColumns),
                     in: 3...10
                 )
             }
@@ -34,10 +28,7 @@ struct SettingsView: View {
             Section("Apps") {
                 Toggle(
                     "Show hidden apps",
-                    isOn: Binding(
-                        get: { store.preferences.showHiddenApps },
-                        set: { store.send(.setShowHiddenApps($0)) }
-                    )
+                    isOn: $store.preferences.showHiddenApps.sending(\.setShowHiddenApps)
                 )
             }
         }

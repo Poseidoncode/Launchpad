@@ -39,7 +39,7 @@ cat > "${APP_DIR}/Contents/Info.plist" << EOF
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
-    <string>com.launchpad.app</string>
+    <string>com.poseidoncode.launchpad</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -55,9 +55,7 @@ cat > "${APP_DIR}/Contents/Info.plist" << EOF
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSHumanReadableCopyright</key>
-    <string>Copyright © 2024. All rights reserved.</string>
-    <key>NSMainStoryboardFile</key>
-    <string></string>
+    <string>Copyright © 2024–2026. All rights reserved.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
 </dict>
@@ -69,7 +67,8 @@ echo "📝 Creating PkgInfo..."
 echo -n "APPL????" > "${APP_DIR}/Contents/PkgInfo"
 
 # 使用專案提供的 PNG 建立 macOS 應用程式圖示
-echo "🎨 Creating app icon..."
+if command -v python3 &>/dev/null && command -v sips &>/dev/null && command -v iconutil &>/dev/null; then
+    echo "🎨 Creating app icon..."
 python3 << 'PYTHON_SCRIPT'
 import os
 import subprocess
@@ -134,17 +133,22 @@ if result.returncode != 0:
 # 清理
 shutil.rmtree(iconset_dir, ignore_errors=True)
 PYTHON_SCRIPT
+else
+    echo "⚠️  Skipping icon generation (requires python3, sips, iconutil)"
+fi
 
 # 生成 Sandbox Entitlements
+# #6 FIX: Removed com.apple.security.files.user-selected.read-only —
+# the app only reads from system directories (/Applications, etc.) which
+# are readable by all sandboxed apps without this entitlement.
+# No NSOpenPanel or file picker is used.
 echo "🔐 Creating entitlements..."
-cat > "${APP_DIR}/Contents/Launchpad.entitlements" << EOF
+cat > "${APP_DIR}/Contents/Resources/Launchpad.entitlements" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>com.apple.security.app-sandbox</key>
-    <true/>
-    <key>com.apple.security.files.user-selected.read-only</key>
     <true/>
 </dict>
 </plist>
@@ -154,9 +158,10 @@ EOF
 echo "🔐 Setting permissions..."
 chmod +x "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 
-# 簽署（ad-hoc，若 dev 證書不存在則跳過）
-if security find-identity -v -p basic 2>/dev/null | grep -q ""; then
-    codesign --force --deep --sign - "${APP_DIR}" 2>/dev/null || true
+# 簽署（ad-hoc，含 entitlements）
+# #5 FIX: Don't swallow codesign failures silently
+if ! codesign --force --deep --sign - --entitlements "${APP_DIR}/Contents/Resources/Launchpad.entitlements" "${APP_DIR}" 2>&1; then
+    echo "⚠️  Code signing failed — app will not pass Gatekeeper" >&2
 fi
 
 # 完成

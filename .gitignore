@@ -16,7 +16,6 @@ DerivedData/
 .build/
 .build2/
 .swiftpm/
-Package.resolved
 
 # CocoaPods
 Pods/

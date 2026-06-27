@@ -12,6 +12,7 @@ final class AppGridTests: XCTestCase {
         initialState.apps = [app1, app2]
         initialState.folders = []
         initialState.appOrder = [app1.id, app2.id]
+        initialState.rebuildOrderIndexMap()
 
         let store = TestStore(
             initialState: initialState
@@ -37,6 +38,7 @@ final class AppGridTests: XCTestCase {
         initialState.apps = [app1, app2, app3]
         initialState.folders = []
         initialState.appOrder = [app1.id, app2.id, app3.id]
+        initialState.rebuildOrderIndexMap()
 
         let store = TestStore(
             initialState: initialState
@@ -62,6 +64,7 @@ final class AppGridTests: XCTestCase {
         initialState.apps = [app1, app2, app3]
         initialState.folders = []
         initialState.appOrder = [app1.id, app2.id, app3.id]
+        initialState.rebuildOrderIndexMap()
 
         let store = TestStore(
             initialState: initialState
