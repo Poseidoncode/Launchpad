@@ -3,8 +3,6 @@ import Foundation
 import AppKit
 import OSLog
 
-private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.poseidoncode.launchpad", category: "app-grid")
-
 @Reducer
 struct AppGridFeature {
     @ObservableState
@@ -34,14 +32,7 @@ struct AppGridFeature {
             
             var result = filtered
                 .filter { !folderAppIDs.contains($0.id) }
-                .map { app -> AppItem in
-                    if let customName = preferences.customAppNames[app.bundleIdentifier] {
-                        var modifiedApp = app
-                        modifiedApp.name = customName
-                        return modifiedApp
-                    }
-                    return app
-                }
+                .map { $0.applyingCustomName(from: preferences) }
             
             result.sort { app1, app2 in
                 let i1 = orderIndexMap[app1.id] ?? Int.max
@@ -58,22 +49,6 @@ struct AppGridFeature {
         
         mutating func rebuildAppMap() {
             appMap = Dictionary(uniqueKeysWithValues: apps.map { ($0.id, $0) })
-        }
-        
-        // Get folder apps (O(n) via appMap)
-        func getFolderApps(folderID: UUID) -> [AppItem] {
-            guard let folder = folders.first(where: { $0.id == folderID }) else { return [] }
-            
-            return folder.appIDs.compactMap { id -> AppItem? in
-                guard let app = appMap[id] else { return nil }
-                // Apply custom name
-                if let customName = preferences.customAppNames[app.bundleIdentifier] {
-                    var modifiedApp = app
-                    modifiedApp.name = customName
-                    return modifiedApp
-                }
-                return app
-            }
         }
     }
     
@@ -97,7 +72,7 @@ struct AppGridFeature {
         case setErrorMessage(String?)
         case dismissError
         case savePreferences
-        case reloadPreferences
+        case flushPendingSave
         case reloadApps
     }
     
@@ -148,20 +123,10 @@ struct AppGridFeature {
                 
             case let .launchResult(success, appName):
                 if !success {
-                    logger.error("Failed to launch: \(appName, privacy: .public)")
+                    Logger.appGrid.error("Failed to launch: \(appName, privacy: .public)")
                     return .send(.setErrorMessage("Could not launch \(appName)"))
                 }
                 return .none
-                
-            case .reloadPreferences:
-                state.preferences = PreferencesStore.load()
-                state.folders = state.preferences.folders
-                state.appOrder = state.preferences.appOrder
-                state.rebuildOrderIndexMap()
-                state.updateDisplayedApps()
-                return .run { [showHidden = state.preferences.showHiddenApps] send in
-                    await send(.appsLoaded(await AppScanner.shared.scanApps(showHidden: showHidden)))
-                }
                 
             case .toggleEditMode:
                 state.isEditMode.toggle()
@@ -223,8 +188,13 @@ struct AppGridFeature {
                 // auto-uniquify "New Folder" so multiple creates don't collide
                 let finalName: String
                 if state.folders.contains(where: { $0.name == name }) {
-                    let count = state.folders.filter { $0.name.hasPrefix(name) }.count + 1
-                    finalName = "\(name) \(count)"
+                    var counter = 2
+                    var candidate = "\(name) \(counter)"
+                    while state.folders.contains(where: { $0.name == candidate }) {
+                        counter += 1
+                        candidate = "\(name) \(counter)"
+                    }
+                    finalName = candidate
                 } else {
                     finalName = name
                 }
@@ -236,10 +206,15 @@ struct AppGridFeature {
             case let .renameFolder(id, name):
                 guard !name.trimmingCharacters(in: .whitespaces).isEmpty else { return .none }
                 if let idx = state.folders.firstIndex(where: { $0.id == id }) {
-                    let trimmed = name.trimmingCharacters(in: .whitespaces)
+                    let trimmed = String(name.trimmingCharacters(in: .whitespaces).prefix(256))
                     if state.folders.contains(where: { $0.name == trimmed && $0.id != id }) {
-                        let count = state.folders.filter { $0.name.hasPrefix(trimmed) }.count + 1
-                        state.folders[idx].name = "\(trimmed) \(count)"
+                        var counter = 2
+                        var candidate = "\(trimmed) \(counter)"
+                        while state.folders.contains(where: { $0.name == candidate && $0.id != id }) {
+                            counter += 1
+                            candidate = "\(trimmed) \(counter)"
+                        }
+                        state.folders[idx].name = candidate
                     } else {
                         state.folders[idx].name = trimmed
                     }
@@ -272,7 +247,7 @@ struct AppGridFeature {
                 
             case let .renameApp(bundleIdentifier, newName):
                 guard !newName.trimmingCharacters(in: .whitespaces).isEmpty else { return .none }
-                state.preferences.customAppNames[bundleIdentifier] = newName
+                state.preferences.customAppNames[bundleIdentifier] = String(newName.prefix(256))
                 state.updateDisplayedApps()
                 return .send(.savePreferences)
                 
@@ -299,9 +274,24 @@ struct AppGridFeature {
                     PreferencesStore.save(prefs)
                 } catch: { error, _ in
                     if error is CancellationError { return }
-                    logger.error("Preferences save failed: \(error, privacy: .public)")
+                    Logger.appGrid.error("Preferences save failed: \(error, privacy: .public)")
                 }
                 .cancellable(id: "prefs-save", cancelInFlight: true)
+                
+            case .flushPendingSave:
+                // Immediate flush — no debounce, no cancellation.
+                // Called on app termination to ensure the last state is persisted.
+                let prefs = UserPreferences(
+                    appOrder: state.appOrder,
+                    folders: state.folders,
+                    showHiddenApps: state.preferences.showHiddenApps,
+                    iconSize: state.preferences.iconSize,
+                    columns: state.preferences.columns,
+                    customAppNames: state.preferences.customAppNames
+                )
+                PreferencesStore.save(prefs)
+                // Cancel any in-flight debounced save to prevent a stale write race
+                return .cancel(id: "prefs-save")
                 
             case .reloadApps:
                 state.isLoading = true

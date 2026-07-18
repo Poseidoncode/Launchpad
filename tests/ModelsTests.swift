@@ -112,6 +112,28 @@ final class UserPreferencesTests: XCTestCase {
         let prefs = UserPreferences()
         XCTAssertTrue(prefs.customAppNames.isEmpty)
     }
+
+    func testDecodeClampsOutOfRangeValues() throws {
+        // Encode preferences with out-of-range values by using a manual JSON
+        let json = """
+        {"appOrder":[],"folders":[],"showHiddenApps":false,"iconSize":500,"columns":0,"customAppNames":{}}
+        """.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(UserPreferences.self, from: json)
+        XCTAssertEqual(decoded.iconSize, 256, "iconSize should be clamped to max 256")
+        XCTAssertEqual(decoded.columns, 1, "columns should be clamped to min 1")
+    }
+
+    func testDecodeFallsBackOnMissingFields() throws {
+        // JSON missing some fields — decodeIfPresent should use defaults
+        let json = """
+        {"appOrder":[],"folders":[]}
+        """.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(UserPreferences.self, from: json)
+        XCTAssertEqual(decoded.iconSize, 60, "Missing iconSize should fall back to default")
+        XCTAssertEqual(decoded.columns, 7, "Missing columns should fall back to default")
+        XCTAssertFalse(decoded.showHiddenApps, "Missing showHiddenApps should default to false")
+        XCTAssertTrue(decoded.customAppNames.isEmpty, "Missing customAppNames should default to empty")
+    }
 }
 
 final class PreferencesStoreTests: XCTestCase {
@@ -161,11 +183,15 @@ final class PreferencesStoreTests: XCTestCase {
     }
 
     func testStagingRecovery() {
+        // Simulate a crash between staging write and real key write:
+        // Only staging key is written, real key is missing/corrupt.
         let prefs = UserPreferences(iconSize: 128, columns: 4)
-        PreferencesStore.save(prefs)
-
-        // Simulate corrupting the real key
-        UserDefaults.standard.set(Data(), forKey: Self.prefsKey)
+        guard let data = try? JSONEncoder().encode(prefs) else {
+            XCTFail("Failed to encode preferences")
+            return
+        }
+        UserDefaults.standard.set(data, forKey: Self.stagingKey)
+        // Real key is not written (simulates crash mid-save)
 
         let loaded = PreferencesStore.load()
         XCTAssertEqual(loaded.iconSize, 128, "Should recover from staging key")
@@ -178,5 +204,17 @@ final class PreferencesStoreTests: XCTestCase {
             let loaded = PreferencesStore.load()
             XCTAssertEqual(loaded.iconSize, Double(size))
         }
+    }
+
+    func testStagingKeyCleanedUpAfterSave() {
+        let prefs = UserPreferences(iconSize: 72, columns: 6)
+        PreferencesStore.save(prefs)
+        // After a successful save, the staging key should be removed
+        XCTAssertNil(
+            UserDefaults.standard.data(forKey: Self.stagingKey),
+            "Staging key should be cleaned up after successful save"
+        )
+        // Real key should be present
+        XCTAssertNotNil(UserDefaults.standard.data(forKey: Self.prefsKey))
     }
 }

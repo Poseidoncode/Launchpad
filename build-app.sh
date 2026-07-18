@@ -142,8 +142,9 @@ fi
 # the app only reads from system directories (/Applications, etc.) which
 # are readable by all sandboxed apps without this entitlement.
 # No NSOpenPanel or file picker is used.
+# Entitlements are stored outside the app bundle (embedded in code signature).
 echo "🔐 Creating entitlements..."
-cat > "${APP_DIR}/Contents/Resources/Launchpad.entitlements" << EOF
+cat > "${APP_DIR}.entitlements" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -159,10 +160,16 @@ echo "🔐 Setting permissions..."
 chmod +x "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 
 # 簽署（ad-hoc，含 entitlements）
-# #5 FIX: Don't swallow codesign failures silently
-if ! codesign --force --deep --sign - --entitlements "${APP_DIR}/Contents/Resources/Launchpad.entitlements" "${APP_DIR}" 2>&1; then
-    echo "⚠️  Code signing failed — app will not pass Gatekeeper" >&2
+# Removed --deep (deprecated since macOS 13). The app has no nested code.
+# Fail hard on codesign failure — an unsigned app is worse than no app.
+echo "🔐 Code signing..."
+if ! codesign --force --sign - --entitlements "${APP_DIR}.entitlements" "${APP_DIR}" 2>&1; then
+    echo "❌ Code signing failed — app will not pass Gatekeeper" >&2
+    exit 1
 fi
+
+# Clean up entitlements file (embedded in signature, no need to ship)
+rm -f "${APP_DIR}.entitlements"
 
 # 完成
 echo ""

@@ -396,6 +396,28 @@ final class AppGridTests: XCTestCase {
         XCTAssertEqual(store.state.folders[1].name, "New Folder 2")
     }
 
+    func testCreateFolderUniquifiesWithGap() async {
+        // "New Folder" and "New Folder 3" exist (no "New Folder 2").
+        // Creating "New Folder" should produce "New Folder 2", not "New Folder 3".
+        let folder1 = Folder(id: UUID(uuidString: "00000000-0000-0000-0000-000000000010")!, name: "New Folder")
+        let folder2 = Folder(id: UUID(uuidString: "00000000-0000-0000-0000-000000000011")!, name: "New Folder 3")
+
+        var initialState = AppGridFeature.State()
+        initialState.folders = [folder1, folder2]
+
+        let store = TestStore(initialState: initialState) {
+            AppGridFeature()
+        }
+        store.exhaustivity = .off
+
+        await store.send(.createFolder(name: "New Folder", appIDs: []))
+        await store.receive(\.savePreferences)
+        await store.skipInFlightEffects()
+
+        XCTAssertEqual(store.state.folders.count, 3)
+        XCTAssertEqual(store.state.folders[2].name, "New Folder 2")
+    }
+
     func testRenameToEmptyIgnored() async {
         let folder = Folder(id: UUID(uuidString: "00000000-0000-0000-0000-000000000010")!, name: "Work")
 
@@ -410,6 +432,44 @@ final class AppGridTests: XCTestCase {
         await store.send(.renameFolder(id: folder.id, name: "   "))
         // No state change expected
         XCTAssertEqual(store.state.folders[0].name, "Work")
+    }
+
+    func testRenameAppTruncatesLongName() async {
+        let app1 = makeApp(id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!, name: "Zoo")
+
+        var initialState = AppGridFeature.State()
+        initialState.apps = [app1]
+        initialState.appOrder = [app1.id]
+
+        let store = TestStore(initialState: initialState) {
+            AppGridFeature()
+        }
+        store.exhaustivity = .off
+
+        let longName = String(repeating: "A", count: 300)
+        await store.send(.renameApp(bundleIdentifier: "com.test.zoo", newName: longName))
+        await store.receive(\.savePreferences)
+        await store.skipInFlightEffects()
+
+        let saved = store.state.preferences.customAppNames["com.test.zoo"] ?? ""
+        XCTAssertEqual(saved.count, 256, "Custom name should be truncated to 256 characters")
+    }
+
+    func testFlushPendingSave() async {
+        let app1 = makeApp(id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!, name: "App1")
+
+        var initialState = AppGridFeature.State()
+        initialState.apps = [app1]
+        initialState.appOrder = [app1.id]
+
+        let store = TestStore(initialState: initialState) {
+            AppGridFeature()
+        }
+        store.exhaustivity = .off
+
+        await store.send(.flushPendingSave)
+        // flushPendingSave cancels the "prefs-save" cancellation ID
+        // No .savePreferences effect is expected since flush writes directly
     }
 
     private func makeApp(id: UUID, name: String) -> AppItem {

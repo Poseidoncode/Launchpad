@@ -59,15 +59,17 @@ struct UserPreferences: Equatable, Codable {
         min(max(value, columnsRange.lowerBound), columnsRange.upperBound)
     }
     
-    // Custom Decodable to validate bounds from UserDefaults
+    // Custom Decodable to validate bounds from UserDefaults.
+    // Uses decodeIfPresent so a single corrupted field falls back to its default
+    // instead of discarding all preferences.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        appOrder = try container.decode([UUID].self, forKey: .appOrder)
-        folders = try container.decode([Folder].self, forKey: .folders)
-        showHiddenApps = try container.decode(Bool.self, forKey: .showHiddenApps)
-        iconSize = try container.decode(Double.self, forKey: .iconSize)
-        columns = try container.decode(Int.self, forKey: .columns)
-        customAppNames = try container.decode([String: String].self, forKey: .customAppNames)
+        appOrder = try container.decodeIfPresent([UUID].self, forKey: .appOrder) ?? []
+        folders = try container.decodeIfPresent([Folder].self, forKey: .folders) ?? []
+        showHiddenApps = try container.decodeIfPresent(Bool.self, forKey: .showHiddenApps) ?? false
+        iconSize = Self.clampIconSize(try container.decodeIfPresent(Double.self, forKey: .iconSize) ?? 60)
+        columns = Self.clampColumns(try container.decodeIfPresent(Int.self, forKey: .columns) ?? 7)
+        customAppNames = try container.decodeIfPresent([String: String].self, forKey: .customAppNames) ?? [:]
     }
     
     // Custom Encodable to handle Clamped property wrappers

@@ -28,7 +28,14 @@ struct SettingsFeature {
                 state.preferences.showHiddenApps = show
                 return .send(.savePreferences)
             case .savePreferences:
-                PreferencesStore.save(state.preferences)
+                // Do NOT call PreferencesStore.save here — SettingsFeature's
+                // preferences only has up-to-date values for iconSize, columns,
+                // and showHiddenApps. The appOrder/folders/customAppNames fields
+                // are stale (loaded at launch, never updated by AppGrid changes).
+                // The RootFeature intercepts this action and routes the save
+                // through AppGridFeature.savePreferences, which constructs
+                // UserPreferences from the merged state (AppGrid's fields +
+                // synced Settings fields) and writes the correct data to disk.
                 return .none
             }
         }

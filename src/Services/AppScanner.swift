@@ -2,17 +2,25 @@ import Foundation
 import AppKit
 import OSLog
 
-private let scanLogger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.poseidoncode.launchpad", category: "app-scanner")
-
 actor AppScanner {
     static let shared = AppScanner()
     
-    private let searchPaths: [URL] = [
-        URL(fileURLWithPath: "/Applications"),
-        URL(fileURLWithPath: "/System/Applications"),
-        URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Applications"),
-        URL(fileURLWithPath: "/System/Applications/Utilities")
-    ]
+    private let searchPaths: [URL] = {
+        var paths: [URL] = [
+            URL(fileURLWithPath: "/Applications"),
+            URL(fileURLWithPath: "/System/Applications"),
+            URL(fileURLWithPath: "/System/Applications/Utilities")
+        ]
+        // Under App Sandbox, NSHomeDirectory() returns the container directory,
+        // not the real user home. Only add ~/Applications when not sandboxed.
+        // We detect sandbox by checking if the container directory exists.
+        let realHome = FileManager.default.homeDirectoryForCurrentUser
+        let userApps = realHome.appendingPathComponent("Applications")
+        if FileManager.default.fileExists(atPath: userApps.path) {
+            paths.append(userApps)
+        }
+        return paths
+    }()
     
     private var cachedApps: [AppItem] = []
     private var lastScanTime: Date?
@@ -21,23 +29,24 @@ actor AppScanner {
     // Continuation-based scan serialization — eliminates the race condition
     private var scanContinuations: [CheckedContinuation<[AppItem], Never>] = []
     private var isScanning = false
+    private var currentScanShowHidden: Bool = false
     
-    // #13: Register for memory pressure to clear caches when needed
+    // Retain the memory pressure source via a helper class to avoid
+    // nonisolated(unsafe) on the actor (Swift 5.9 compatibility).
+    private nonisolated let memoryPressureObserver: MemoryPressureObserver
+    
     private init() {
-        // On macOS, use DispatchSource for memory pressure notifications
-        let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
-        source.setEventHandler { [self] in
-            let event = source.data
-            if event.contains(.warning) || event.contains(.critical) {
-                scanLogger.warning("Memory pressure detected — clearing caches")
-                Task { await self.handleMemoryPressure() }
-            }
+        // Create observer with a closure that captures a weak reference.
+        // The closure is not called during init, so weak self is safe here.
+        self.memoryPressureObserver = MemoryPressureObserver()
+        self.memoryPressureObserver.handler = { [weak self] in
+            Task { await self?.handleMemoryPressure() }
         }
-        source.resume()
+        self.memoryPressureObserver.start()
     }
     
     private func handleMemoryPressure() {
-        scanLogger.warning("Memory pressure detected — clearing icon cache")
+        Logger.appScanner.warning("Memory pressure detected — clearing icon cache")
         cachedApps = []
         lastScanTime = nil
         Task { await IconCache.shared.clear() }
@@ -46,21 +55,29 @@ actor AppScanner {
     func scanApps(showHidden: Bool = false, forceRefresh: Bool = false) async -> [AppItem] {
         if !forceRefresh, let lastScan = lastScanTime,
            Date().timeIntervalSince(lastScan) < cacheValidDuration,
-           !cachedApps.isEmpty {
+           !cachedApps.isEmpty,
+           currentScanShowHidden == showHidden {
             return cachedApps
         }
         
-        // #1 FIX: If a scan is already in progress, wait for result
-        // NOTE: The showHidden parameter is not propagated to waiters — they receive the result
-        // of the in-progress scan regardless of their showHidden request. This is acceptable
-        // for a launcher app with a single UI toggle, but would need refinement for library use.
+        // If a scan is already in progress, wait for its result.
+        // If the showHidden parameter matches, the waiter receives the same result.
+        // If it differs, the waiter will re-check the cache after the current scan
+        // completes and start a new scan if needed.
         if isScanning {
-            return await withCheckedContinuation { continuation in
+            let result = await withCheckedContinuation { continuation in
                 scanContinuations.append(continuation)
             }
+            // After waiting, check if the cached result matches our request.
+            // If not, start a fresh scan with the correct parameter.
+            if currentScanShowHidden == showHidden {
+                return result
+            }
+            // Fall through to start a new scan with the correct showHidden.
         }
         
         isScanning = true
+        currentScanShowHidden = showHidden
         let apps = await performScan(showHidden: showHidden)
         
         let sorted = apps.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -80,8 +97,6 @@ actor AppScanner {
         
         return deduped
     }
-    
-
     
     private nonisolated func performScan(showHidden: Bool) async -> [AppItem] {
         var apps: [AppItem] = []
@@ -104,7 +119,7 @@ actor AppScanner {
                     return resourceValues.isSymbolicLink == false
                 } catch {
                     // Fail-closed: exclude URLs we cannot verify
-                    scanLogger.warning("Could not check symlink status for \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                    Logger.appScanner.warning("Could not check symlink status for \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
                     return false
                 }
             }
@@ -143,7 +158,8 @@ actor AppScanner {
     
     // #3 FIX: Removed unnecessary Task.detached — the TaskGroup child task
     // is already off the actor. Bundle(url:) is a fast synchronous plist read.
-    private func makeAppItem(from url: URL) async -> AppItem? {
+    // nonisolated: avoids serializing 8 concurrent tasks on the actor.
+    private nonisolated func makeAppItem(from url: URL) async -> AppItem? {
         guard !Task.isCancelled else { return nil }
         
         let bundle = Bundle(url: url)
@@ -161,5 +177,28 @@ actor AppScanner {
             path: url,
             icon: icon
         )
+    }
+}
+
+// Helper class to retain the DispatchSource without requiring
+// nonisolated(unsafe) on the actor — Swift 5.9 compatible.
+private final class MemoryPressureObserver {
+    var handler: (() -> Void)?
+    private var source: DispatchSourceMemoryPressure?
+    
+    init() {}
+    
+    func start() {
+        let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
+        source.setEventHandler { [weak self] in
+            guard let self else { return }
+            let event = source.data
+            if event.contains(.warning) || event.contains(.critical) {
+                Logger.appScanner.warning("Memory pressure detected — clearing caches")
+                self.handler?()
+            }
+        }
+        source.resume()
+        self.source = source
     }
 }

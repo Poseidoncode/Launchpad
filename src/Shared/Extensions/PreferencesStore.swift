@@ -1,9 +1,9 @@
 import Foundation
 import OSLog
 
-private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.poseidoncode.launchpad", category: "preferences")
-
 extension Notification.Name {
+    // Kept for backward compatibility — no longer used for inter-store communication.
+    // The RootFeature now handles cross-feature state sync directly.
     static let launchpadPreferencesDidChange = Notification.Name("LaunchpadPreferencesDidChange")
 }
 
@@ -22,18 +22,18 @@ enum PreferencesStore {
             // Fall back to staging key (crash recovery — write-ahead from last save)
             if let data = UserDefaults.standard.data(forKey: stagingKey),
                let prefs = try? JSONDecoder().decode(UserPreferences.self, from: data) {
-                logger.warning("Recovered preferences from staging key")
+                Logger.preferences.warning("Recovered preferences from staging key")
                 UserDefaults.standard.set(data, forKey: key)
                 return prefs
             }
-            logger.warning("Preferences decode failed, using defaults")
+            Logger.preferences.warning("Preferences decode failed, using defaults")
             return .default
         }
     }
     
     static func save(_ preferences: UserPreferences) {
         guard let data = try? JSONEncoder().encode(preferences) else {
-            logger.error("Preferences encode failed")
+            Logger.preferences.error("Preferences encode failed")
             return
         }
         lock.withLock {
@@ -41,7 +41,8 @@ enum PreferencesStore {
             // A crash between the two leaves staging intact for recovery on next load.
             UserDefaults.standard.set(data, forKey: stagingKey)
             UserDefaults.standard.set(data, forKey: key)
+            // Clean up staging key — real key is now authoritative
+            UserDefaults.standard.removeObject(forKey: stagingKey)
         }
-        NotificationCenter.default.post(name: .launchpadPreferencesDidChange, object: nil)
     }
 }

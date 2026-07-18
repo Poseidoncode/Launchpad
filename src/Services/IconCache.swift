@@ -2,8 +2,6 @@ import AppKit
 import Foundation
 import OSLog
 
-private let cacheLogger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.poseidoncode.launchpad", category: "icon-cache")
-
 actor IconCache {
     static let shared = IconCache()
     
@@ -25,8 +23,8 @@ actor IconCache {
             return cached
         }
         
-        // Hop to main thread for NSWorkspace.icon(forFile:)
-        let icon = await MainActor.run { NSWorkspace.shared.icon(forFile: path) }
+        // NSWorkspace.shared.icon(forFile:) is thread-safe — no MainActor hop needed
+        let icon = NSWorkspace.shared.icon(forFile: path)
         guard icon.isValid else { return icon }
         
         if icon.size == desiredSize {

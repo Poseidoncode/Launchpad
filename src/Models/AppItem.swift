@@ -10,7 +10,7 @@ struct AppItem: Identifiable, Equatable, Codable {
     var icon: NSImage?
     
     init(
-        id: UUID = UUID(),
+        id: UUID,
         name: String,
         bundleIdentifier: String,
         path: URL,
