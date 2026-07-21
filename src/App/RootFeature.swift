@@ -33,19 +33,38 @@ struct RootFeature {
             switch action {
             case .settings(.savePreferences):
                 let oldShowHidden = state.appGrid.preferences.showHiddenApps
+                let oldIconSize = state.appGrid.preferences.iconSize
                 // Sync only Settings-managed fields into AppGrid's preferences
                 state.appGrid.preferences.iconSize = state.settings.preferences.iconSize
                 state.appGrid.preferences.columns = state.settings.preferences.columns
                 state.appGrid.preferences.showHiddenApps = state.settings.preferences.showHiddenApps
                 state.appGrid.updateDisplayedApps()
-                // Save merged preferences via AppGrid's debounced save
-                // Only rescan when showHiddenApps actually changed
-                if oldShowHidden != state.appGrid.preferences.showHiddenApps {
+                // Save merged preferences via AppGrid's debounced save.
+                // Rescan when showHiddenApps changes, or when iconSize grows enough
+                // that the raster point footprint (incl. hover) would increase.
+                let iconSizeIncreased = UserPreferences.iconSizeRequiresHigherResolution(
+                    from: oldIconSize,
+                    to: state.appGrid.preferences.iconSize
+                )
+                if oldShowHidden != state.appGrid.preferences.showHiddenApps || iconSizeIncreased {
                     return .merge(
                         .send(.appGrid(.savePreferences)),
-                        .run { [showHidden = state.appGrid.preferences.showHiddenApps] send in
+                        .run { [
+                            showHidden = state.appGrid.preferences.showHiddenApps,
+                            iconSize = state.appGrid.preferences.iconSize,
+                            iconSizeIncreased
+                        ] send in
+                            if iconSizeIncreased {
+                                await IconCache.shared.clear()
+                            }
+                            // Pass iconSize from state — PreferencesStore may still hold
+                            // the old value until the debounced savePreferences writes.
                             await send(.appGrid(.appsLoaded(
-                                await AppScanner.shared.scanApps(showHidden: showHidden)
+                                await AppScanner.shared.scanApps(
+                                    showHidden: showHidden,
+                                    forceRefresh: iconSizeIncreased,
+                                    iconSize: iconSize
+                                )
                             )))
                         }
                     )

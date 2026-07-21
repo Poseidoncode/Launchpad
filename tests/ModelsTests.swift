@@ -134,6 +134,42 @@ final class UserPreferencesTests: XCTestCase {
         XCTAssertFalse(decoded.showHiddenApps, "Missing showHiddenApps should default to false")
         XCTAssertTrue(decoded.customAppNames.isEmpty, "Missing customAppNames should default to empty")
     }
+    
+    func testIconRasterPointSizeIncludesHover() {
+        XCTAssertEqual(UserPreferences.iconRasterPointSize(100), 110, accuracy: 0.0001)
+        XCTAssertEqual(UserPreferences.iconHoverScale, 1.10, accuracy: 0.0001)
+    }
+    
+    func testIconRasterPointFootprintMatchesRoundedCacheKey() {
+        // 60.45 × 1.10 = 66.495 → rounded 66 (ceil would be 67 — must not use ceil)
+        let size = 60.45
+        XCTAssertEqual(UserPreferences.iconRasterPointFootprint(size), 66)
+        XCTAssertEqual(
+            UserPreferences.iconRasterPointFootprint(size),
+            Int(UserPreferences.iconRasterPointSize(size).rounded())
+        )
+    }
+    
+    func testIconSizeRequiresHigherResolutionOnlyWhenFootprintGrows() {
+        XCTAssertFalse(UserPreferences.iconSizeRequiresHigherResolution(from: 60, to: 60))
+        // 60×1.1=66, 61×1.1=67.1 → footprints 66 → 67
+        XCTAssertTrue(UserPreferences.iconSizeRequiresHigherResolution(from: 60, to: 61))
+        // Shrink never needs a larger bitmap
+        XCTAssertFalse(UserPreferences.iconSizeRequiresHigherResolution(from: 120, to: 60))
+        // Sub-point growth that stays in the same rounded footprint
+        let base = 60.0
+        var sameFootprint = base
+        let baseFootprint = UserPreferences.iconRasterPointFootprint(base)
+        while UserPreferences.iconRasterPointFootprint(sameFootprint) == baseFootprint {
+            sameFootprint += 0.01
+            if sameFootprint > base + 2 { break }
+        }
+        let stillSame = sameFootprint - 0.01
+        XCTAssertFalse(
+            UserPreferences.iconSizeRequiresHigherResolution(from: base, to: stillSame),
+            "Growth within the same rounded footprint must not trigger a rescan"
+        )
+    }
 }
 
 final class PreferencesStoreTests: XCTestCase {

@@ -44,7 +44,7 @@ struct AppGridItem: View {
                 }
                 .frame(width: iconSize, height: iconSize)
                 .shadow(color: .black.opacity(0.35), radius: isHovered ? 10 : 4, y: isHovered ? 5 : 2)
-                .scaleEffect(isHovered ? 1.10 : 1.0)
+                .scaleEffect(isHovered ? CGFloat(UserPreferences.iconHoverScale) : 1.0)
                 .animation(.spring(response: 0.25, dampingFraction: 0.6), value: isHovered)
                 .opacity(isDraggingLocal ? 0.4 : 1.0)
 

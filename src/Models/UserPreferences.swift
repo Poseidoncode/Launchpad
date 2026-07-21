@@ -50,6 +50,26 @@ struct UserPreferences: Equatable, Codable {
     
     static let iconSizeRange: ClosedRange<Double> = 16...256
     static let columnsRange: ClosedRange<Int> = 1...20
+    /// Hover scale applied to grid icons; IconCache rasterizes at `iconSize ×` this.
+    static let iconHoverScale: Double = 1.10
+    
+    /// Point size used when rasterizing icons (includes hover headroom).
+    static func iconRasterPointSize(_ iconSize: Double) -> Double {
+        iconSize * iconHoverScale
+    }
+    
+    /// Integer point footprint used in IconCache keys (`Int(size.rounded())`).
+    /// Must stay in sync with `IconCache.cacheKey` so rescan decisions match hits/misses.
+    static func iconRasterPointFootprint(_ iconSize: Double) -> Int {
+        Int(iconRasterPointSize(iconSize).rounded())
+    }
+    
+    /// True when `newSize` needs a larger bitmap than `oldSize`.
+    /// Compares integer point footprints after hover scale so any growth that
+    /// would change the IconCache key (and look soft if reused) triggers a rescan.
+    static func iconSizeRequiresHigherResolution(from oldSize: Double, to newSize: Double) -> Bool {
+        iconRasterPointFootprint(newSize) > iconRasterPointFootprint(oldSize)
+    }
     
     private static func clampIconSize(_ value: Double) -> Double {
         min(max(value, iconSizeRange.lowerBound), iconSizeRange.upperBound)

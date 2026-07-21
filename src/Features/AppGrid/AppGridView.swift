@@ -169,6 +169,10 @@ struct AppGridView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             store.send(.flushPendingSave)
         }
+        // Scale is part of icon rasterization; refresh so grid items don't keep soft bitmaps.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+            store.send(.reloadApps)
+        }
         .onKeyPress(.escape) {
             if store.openFolderID != nil { store.send(.closeFolder); return .handled }
             if !store.searchQuery.isEmpty { store.send(.setSearchQuery("")); return .handled }

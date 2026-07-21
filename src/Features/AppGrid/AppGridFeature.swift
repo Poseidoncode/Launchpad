@@ -86,8 +86,14 @@ struct AppGridFeature {
                 state.appOrder = state.preferences.appOrder
                 state.rebuildOrderIndexMap()
                 
-                return .run { [showHidden = state.preferences.showHiddenApps] send in
-                    await send(.appsLoaded(await AppScanner.shared.scanApps(showHidden: showHidden)))
+                return .run { [
+                    showHidden = state.preferences.showHiddenApps,
+                    iconSize = state.preferences.iconSize
+                ] send in
+                    await send(.appsLoaded(await AppScanner.shared.scanApps(
+                        showHidden: showHidden,
+                        iconSize: iconSize
+                    )))
                 }
                 
             case let .appsLoaded(apps):
@@ -295,8 +301,15 @@ struct AppGridFeature {
                 
             case .reloadApps:
                 state.isLoading = true
-                return .run { [showHidden = state.preferences.showHiddenApps] send in
-                    let apps = await AppScanner.shared.scanApps(showHidden: showHidden, forceRefresh: true)
+                return .run { [
+                    showHidden = state.preferences.showHiddenApps,
+                    iconSize = state.preferences.iconSize
+                ] send in
+                    let apps = await AppScanner.shared.scanApps(
+                        showHidden: showHidden,
+                        forceRefresh: true,
+                        iconSize: iconSize
+                    )
                     await send(.appsLoaded(apps))
                 }
             }

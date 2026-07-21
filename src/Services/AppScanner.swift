@@ -24,81 +24,131 @@ actor AppScanner {
     
     private var cachedApps: [AppItem] = []
     private var lastScanTime: Date?
+    /// Icon size (points) used when `cachedApps` icons were rasterized.
+    private var lastScanIconSize: Double?
     private let cacheValidDuration: TimeInterval = 300
     
     // Continuation-based scan serialization — eliminates the race condition
     private var scanContinuations: [CheckedContinuation<[AppItem], Never>] = []
     private var isScanning = false
     private var currentScanShowHidden: Bool = false
+    /// Icon size of the in-flight / just-completed scan (for waiter compatibility).
+    private var currentScanIconSize: Double = 0
+    /// Whether the in-flight / just-completed scan was started with `forceRefresh`.
+    /// Waiters that also requested forceRefresh can reuse that result instead of looping forever.
+    private var currentScanWasForced = false
     
-    // Retain the memory pressure source via a helper class to avoid
+    // Retain observers via helper classes to avoid
     // nonisolated(unsafe) on the actor (Swift 5.9 compatibility).
     private nonisolated let memoryPressureObserver: MemoryPressureObserver
+    private nonisolated let screenChangeObserver: ScreenChangeObserver
     
     private init() {
-        // Create observer with a closure that captures a weak reference.
-        // The closure is not called during init, so weak self is safe here.
+        // Create observers with closures that capture a weak reference.
+        // Closures are not called during init, so weak self is safe here.
         self.memoryPressureObserver = MemoryPressureObserver()
         self.memoryPressureObserver.handler = { [weak self] in
             Task { await self?.handleMemoryPressure() }
         }
         self.memoryPressureObserver.start()
+        
+        self.screenChangeObserver = ScreenChangeObserver()
+        self.screenChangeObserver.handler = { [weak self] in
+            Task { await self?.handleScreenChange() }
+        }
+        self.screenChangeObserver.start()
+    }
+    
+    private func invalidateScanCache() {
+        cachedApps = []
+        lastScanTime = nil
+        lastScanIconSize = nil
     }
     
     private func handleMemoryPressure() {
         Logger.appScanner.warning("Memory pressure detected — clearing icon cache")
-        cachedApps = []
-        lastScanTime = nil
+        invalidateScanCache()
         Task { await IconCache.shared.clear() }
     }
     
-    func scanApps(showHidden: Bool = false, forceRefresh: Bool = false) async -> [AppItem] {
-        if !forceRefresh, let lastScan = lastScanTime,
-           Date().timeIntervalSince(lastScan) < cacheValidDuration,
-           !cachedApps.isEmpty,
-           currentScanShowHidden == showHidden {
-            return cachedApps
-        }
-        
-        // If a scan is already in progress, wait for its result.
-        // If the showHidden parameter matches, the waiter receives the same result.
-        // If it differs, the waiter will re-check the cache after the current scan
-        // completes and start a new scan if needed.
-        if isScanning {
-            let result = await withCheckedContinuation { continuation in
-                scanContinuations.append(continuation)
-            }
-            // After waiting, check if the cached result matches our request.
-            // If not, start a fresh scan with the correct parameter.
-            if currentScanShowHidden == showHidden {
-                return result
-            }
-            // Fall through to start a new scan with the correct showHidden.
-        }
-        
-        isScanning = true
-        currentScanShowHidden = showHidden
-        let apps = await performScan(showHidden: showHidden)
-        
-        let sorted = apps.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        // deduplicate by bundleIdentifier — same app from multiple paths shows once
-        var seenIDs = Set<String>()
-        let deduped = sorted.filter { seenIDs.insert($0.bundleIdentifier).inserted }
-        cachedApps = deduped
-        lastScanTime = Date()
-        isScanning = false
-        
-        // Wake all waiters with the same result
-        let waiters = scanContinuations
-        scanContinuations.removeAll()
-        for continuation in waiters {
-            continuation.resume(returning: deduped)
-        }
-        
-        return deduped
+    /// Drop embedded-icon scan results so the next scan re-rasterizes for the new scale.
+    /// IconCache clears itself separately; AppGridView triggers `.reloadApps` for UI.
+    private func handleScreenChange() {
+        Logger.appScanner.info("Screen parameters changed — invalidating scan cache")
+        invalidateScanCache()
     }
     
-    private nonisolated func performScan(showHidden: Bool) async -> [AppItem] {
+    /// Cached / in-flight icons are sharp enough when the requested size does not
+    /// need a larger raster footprint than what was already scanned.
+    private func iconsCover(requestedSize: Double, scannedSize: Double) -> Bool {
+        !UserPreferences.iconSizeRequiresHigherResolution(from: scannedSize, to: requestedSize)
+    }
+    
+    /// - Parameter iconSize: Point size from in-memory preferences. Prefer passing this
+    ///   over relying on `PreferencesStore.load()` so a debounced disk save cannot
+    ///   supply a stale size during an icon-size-driven rescan.
+    func scanApps(
+        showHidden: Bool = false,
+        forceRefresh: Bool = false,
+        iconSize: Double? = nil
+    ) async -> [AppItem] {
+        let resolvedIconSize = iconSize ?? PreferencesStore.load().iconSize
+        
+        while true {
+            if !forceRefresh,
+               let lastScan = lastScanTime,
+               let lastIconSize = lastScanIconSize,
+               Date().timeIntervalSince(lastScan) < cacheValidDuration,
+               !cachedApps.isEmpty,
+               currentScanShowHidden == showHidden,
+               iconsCover(requestedSize: resolvedIconSize, scannedSize: lastIconSize) {
+                return cachedApps
+            }
+            
+            // If a scan is already in progress, wait for its result.
+            // Reuse it when showHidden matches, icons cover our size, and we
+            // either did not request a force refresh or the completed scan was forced.
+            if isScanning {
+                let result = await withCheckedContinuation { continuation in
+                    scanContinuations.append(continuation)
+                }
+                if currentScanShowHidden == showHidden,
+                   iconsCover(requestedSize: resolvedIconSize, scannedSize: currentScanIconSize),
+                   (!forceRefresh || currentScanWasForced) {
+                    return result
+                }
+                // Stale relative to our request — loop and try again (another
+                // waiter may already have started the scan we need).
+                continue
+            }
+            
+            isScanning = true
+            currentScanShowHidden = showHidden
+            currentScanIconSize = resolvedIconSize
+            currentScanWasForced = forceRefresh
+            let apps = await performScan(showHidden: showHidden, iconSize: resolvedIconSize)
+            
+            let sorted = apps.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            // deduplicate by bundleIdentifier — same app from multiple paths shows once
+            var seenIDs = Set<String>()
+            let deduped = sorted.filter { seenIDs.insert($0.bundleIdentifier).inserted }
+            cachedApps = deduped
+            lastScanTime = Date()
+            lastScanIconSize = resolvedIconSize
+            isScanning = false
+            
+            // Wake all waiters with the same result
+            let waiters = scanContinuations
+            scanContinuations.removeAll()
+            for continuation in waiters {
+                continuation.resume(returning: deduped)
+            }
+            
+            return deduped
+        }
+    }
+    
+    private nonisolated func performScan(showHidden: Bool, iconSize: Double) async -> [AppItem] {
         var apps: [AppItem] = []
         let fileManager = FileManager.default
         
@@ -135,7 +185,7 @@ actor AppScanner {
                     guard let url = iterator.next() else { break }
                     group.addTask {
                         guard !Task.isCancelled else { return nil }
-                        return await self.makeAppItem(from: url)
+                        return await self.makeAppItem(from: url, iconSize: iconSize)
                     }
                 }
                 // As each task completes, start the next one
@@ -144,7 +194,7 @@ actor AppScanner {
                     if let url = iterator.next() {
                         group.addTask {
                             guard !Task.isCancelled else { return nil }
-                            return await self.makeAppItem(from: url)
+                            return await self.makeAppItem(from: url, iconSize: iconSize)
                         }
                     }
                 }
@@ -159,7 +209,7 @@ actor AppScanner {
     // #3 FIX: Removed unnecessary Task.detached — the TaskGroup child task
     // is already off the actor. Bundle(url:) is a fast synchronous plist read.
     // nonisolated: avoids serializing 8 concurrent tasks on the actor.
-    private nonisolated func makeAppItem(from url: URL) async -> AppItem? {
+    private nonisolated func makeAppItem(from url: URL, iconSize: Double) async -> AppItem? {
         guard !Task.isCancelled else { return nil }
         
         let bundle = Bundle(url: url)
@@ -168,7 +218,13 @@ actor AppScanner {
             ?? url.deletingPathExtension().lastPathComponent
         let bundleID = bundle?.bundleIdentifier ?? url.path
         
-        let icon = await IconCache.shared.icon(for: url.path)
+        // Match the user's icon size (points), with headroom for hover scale.
+        // IconCache rasterizes at points × Retina scale so the grid stays sharp.
+        let pointSize = UserPreferences.iconRasterPointSize(iconSize)
+        let icon = await IconCache.shared.icon(
+            for: url.path,
+            desiredSize: NSSize(width: pointSize, height: pointSize)
+        )
         
         return AppItem(
             id: AppItem.stableID(bundleIdentifier: bundleID, path: url),

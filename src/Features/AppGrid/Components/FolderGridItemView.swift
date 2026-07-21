@@ -55,7 +55,7 @@ struct FolderGridItem: View {
                     }
                 }
             }
-            .scaleEffect(isHovered ? 1.10 : 1.0)
+            .scaleEffect(isHovered ? CGFloat(UserPreferences.iconHoverScale) : 1.0)
             .animation(.spring(response: 0.25, dampingFraction: 0.6), value: isHovered)
 
             Text(folder.name)
