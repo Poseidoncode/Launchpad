@@ -44,15 +44,16 @@ actor AppScanner {
     private nonisolated let screenChangeObserver: ScreenChangeObserver
     
     private init() {
-        // Create observers with closures that capture a weak reference.
-        // Closures are not called during init, so weak self is safe here.
+        // Initialise all stored properties first so self is fully initialised
+        // before any closure captures it (even weakly).
         self.memoryPressureObserver = MemoryPressureObserver()
+        self.screenChangeObserver = ScreenChangeObserver()
+        
         self.memoryPressureObserver.handler = { [weak self] in
             Task { await self?.handleMemoryPressure() }
         }
         self.memoryPressureObserver.start()
         
-        self.screenChangeObserver = ScreenChangeObserver()
         self.screenChangeObserver.handler = { [weak self] in
             Task { await self?.handleScreenChange() }
         }
