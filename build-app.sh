@@ -14,7 +14,7 @@ echo "🚀 Building ${APP_NAME}..."
 
 # 編譯 release 版本
 echo "📦 Compiling release build..."
-swift build -c release
+swift build -c release --disable-sandbox
 
 # 創建 .app 結構
 echo "📁 Creating app bundle structure..."
