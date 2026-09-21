@@ -8,7 +8,8 @@ actor IconCache {
     private let cache = NSCache<NSString, NSImage>()
     
     /// Densest attached-display scale, cached so hits skip MainActor.
-    /// Invalidated when screen parameters change.
+    /// Refreshed on screen-parameter changes, dropping bitmaps only when the
+    /// scale itself actually changed.
     private var cachedScale: CGFloat?
     
     private nonisolated let screenChangeObserver: ScreenChangeObserver
@@ -36,19 +37,32 @@ actor IconCache {
             return cached
         }
         
+        // Fetch and rasterize off the actor so concurrent scans don't serialize
+        // on the blocking NSWorkspace lookup. Duplicate in-flight fetches for
+        // the same key may rasterize twice (last write wins); the scanner
+        // requests distinct paths, so this is rare and harmless.
+        let (image, cacheable) = await Self.fetchAndRasterize(path: path, desiredSize: desiredSize, scale: scale)
+        guard cacheable else { return image }
+        
+        cache.setObject(image, forKey: key as NSString, cost: estimateCost(for: image))
+        return image
+    }
+    
+    /// Thread-safe: the NSWorkspace lookup and CGContext rasterization touch no
+    /// actor state, so any number of callers may run this concurrently.
+    /// Returns the image plus whether it is worth caching (invalid workspace
+    /// icons are returned as-is, uncached, matching prior behaviour).
+    private nonisolated static func fetchAndRasterize(path: String, desiredSize: NSSize, scale: CGFloat) async -> (NSImage, Bool) {
         // NSWorkspace.shared.icon(forFile:) is thread-safe — no MainActor hop needed
         let icon = NSWorkspace.shared.icon(forFile: path)
-        guard icon.isValid else { return icon }
+        guard icon.isValid else { return (icon, false) }
         
         // Always rasterize so we don't retain multi-representation workspace icons,
         // and so point size alone never skips a Retina-quality bitmap.
         let resized = await Task.detached(priority: .utility) {
             icon.resized(to: desiredSize, scale: scale) ?? icon
         }.value
-        
-        let cost = estimateCost(for: resized)
-        cache.setObject(resized, forKey: key as NSString, cost: cost)
-        return resized
+        return (resized, true)
     }
     
     /// Returns the cached scale, fetching from the main actor only on first use
@@ -62,8 +76,14 @@ actor IconCache {
         return scale
     }
     
-    private func handleScreenChange() {
-        cachedScale = nil
+    private func handleScreenChange() async {
+        // Only drop bitmaps when the densest scale actually changed — this
+        // notification also fires for arrangement/colour changes needing no work.
+        let newScale = await MainActor.run {
+            NSImage.preferredBackingScaleFactor()
+        }
+        if cachedScale == newScale { return }
+        cachedScale = newScale
         // Scale is part of the cache key; drop entries so the next lookup
         // re-rasterizes for the new densest display.
         cache.removeAllObjects()

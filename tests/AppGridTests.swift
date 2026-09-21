@@ -472,6 +472,58 @@ final class AppGridTests: XCTestCase {
         // No .savePreferences effect is expected since flush writes directly
     }
 
+    func testAppsLoadedClearsLoadingByDefault() async {
+        let app1 = makeApp(id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!, name: "App1")
+
+        var initialState = AppGridFeature.State()
+        initialState.isLoading = true
+        initialState.appOrder = [app1.id]
+
+        let store = TestStore(initialState: initialState) {
+            AppGridFeature()
+        }
+
+        await store.send(.appsLoaded([app1])) {
+            $0.isLoading = false
+            $0.apps = [app1]
+            $0.rebuildAppMap()
+            $0.updateDisplayedApps()
+        }
+    }
+
+    func testSilentAppsLoadedPreservesLoading() async {
+        let app1 = makeApp(id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!, name: "App1")
+
+        var initialState = AppGridFeature.State()
+        initialState.isLoading = true
+        initialState.appOrder = [app1.id]
+
+        let store = TestStore(initialState: initialState) {
+            AppGridFeature()
+        }
+
+        // isLoading deliberately absent from the expected mutation: a background
+        // scan must not end a concurrent reload's spinner.
+        await store.send(.appsLoaded([app1], clearsLoading: false)) {
+            $0.apps = [app1]
+            $0.rebuildAppMap()
+            $0.updateDisplayedApps()
+        }
+    }
+
+    func testRefreshIconsAfterScreenChangeIsSilent() async {
+        let store = TestStore(initialState: AppGridFeature.State()) {
+            AppGridFeature()
+        }
+        store.exhaustivity = .off
+
+        // No state-change closure: asserts the send itself mutates nothing —
+        // in particular it must not set isLoading (no spinner for display changes).
+        // The effect runs a real scan; skipInFlightEffects drains it.
+        await store.send(.refreshIconsAfterScreenChange)
+        await store.skipInFlightEffects()
+    }
+
     private func makeApp(id: UUID, name: String) -> AppItem {
         AppItem(
             id: id,

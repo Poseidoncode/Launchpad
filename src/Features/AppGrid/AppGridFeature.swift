@@ -22,17 +22,20 @@ struct AppGridFeature {
         private(set) var appMap: [UUID: AppItem] = [:]
         
         mutating func updateDisplayedApps() {
-            let query = searchQuery.lowercased()
-            let filtered = query.isEmpty ? apps : apps.filter { 
-                $0.name.lowercased().contains(query) 
+            // Locale-aware match without allocating a lowercased copy of every
+            // name on each keystroke (same predicate FolderDetailView uses).
+            let filtered = searchQuery.isEmpty ? apps : apps.filter {
+                $0.name.localizedCaseInsensitiveContains(searchQuery)
             }
             
             // hide apps that are inside folders
             let folderAppIDs = Set(folders.flatMap(\.appIDs))
             
-            var result = filtered
-                .filter { !folderAppIDs.contains($0.id) }
-                .map { $0.applyingCustomName(from: preferences) }
+            var result = filtered.filter { !folderAppIDs.contains($0.id) }
+            // Skip copying the whole array when no custom names exist (common).
+            if !preferences.customAppNames.isEmpty {
+                result = result.map { $0.applyingCustomName(from: preferences) }
+            }
             
             result.sort { app1, app2 in
                 let i1 = orderIndexMap[app1.id] ?? Int.max
@@ -54,7 +57,11 @@ struct AppGridFeature {
     
     enum Action {
         case onAppear
-        case appsLoaded([AppItem])
+        /// - Parameter clearsLoading: Only scans that showed a spinner
+        ///   (`.onAppear`, `.reloadApps`) clear it. Background scans (settings
+        ///   rescan, screen-change refresh, debounced icon rescan) pass `false`
+        ///   so they can't end a concurrent reload's spinner early.
+        case appsLoaded([AppItem], clearsLoading: Bool = true)
         case launchApp(AppItem)
         case launchResult(Bool, String)
         case toggleEditMode
@@ -74,6 +81,8 @@ struct AppGridFeature {
         case savePreferences
         case flushPendingSave
         case reloadApps
+        case refreshIconsAfterScreenChange
+        case iconRescanDebounceFired
     }
     
     var body: some ReducerOf<Self> {
@@ -96,8 +105,10 @@ struct AppGridFeature {
                     )))
                 }
                 
-            case let .appsLoaded(apps):
-                state.isLoading = false
+            case let .appsLoaded(apps, clearsLoading):
+                if clearsLoading {
+                    state.isLoading = false
+                }
                 state.apps = apps
                 state.rebuildAppMap()
                 
@@ -296,8 +307,12 @@ struct AppGridFeature {
                     customAppNames: state.preferences.customAppNames
                 )
                 PreferencesStore.save(prefs)
-                // Cancel any in-flight debounced save to prevent a stale write race
-                return .cancel(id: "prefs-save")
+                // Cancel any in-flight debounced save to prevent a stale write race,
+                // plus any pending icon rescan (pointless once we're terminating).
+                return .merge(
+                    .cancel(id: "prefs-save"),
+                    .cancel(id: "icon-rescan")
+                )
                 
             case .reloadApps:
                 state.isLoading = true
@@ -311,6 +326,38 @@ struct AppGridFeature {
                         iconSize: iconSize
                     )
                     await send(.appsLoaded(apps))
+                }
+                
+            case .refreshIconsAfterScreenChange:
+                // Silent background refresh: no isLoading spinner. Non-forced,
+                // so a display change that kept the same scale (AppScanner only
+                // invalidates on scale change) is a cheap cache hit.
+                return .run { [
+                    showHidden = state.preferences.showHiddenApps,
+                    iconSize = state.preferences.iconSize
+                ] send in
+                    let apps = await AppScanner.shared.scanApps(
+                        showHidden: showHidden,
+                        iconSize: iconSize
+                    )
+                    await send(.appsLoaded(apps, clearsLoading: false))
+                }
+                
+            case .iconRescanDebounceFired:
+                // Fired by RootFeature's debounced icon-size rescan. Reads state
+                // fresh here (not captured across the debounce window) so a
+                // showHidden toggle mid-debounce can't be overwritten with stale
+                // results. Non-forced: a fresher scan that already covered this
+                // size is a cheap cache hit instead of redundant work.
+                return .run { [
+                    showHidden = state.preferences.showHiddenApps,
+                    iconSize = state.preferences.iconSize
+                ] send in
+                    let apps = await AppScanner.shared.scanApps(
+                        showHidden: showHidden,
+                        iconSize: iconSize
+                    )
+                    await send(.appsLoaded(apps, clearsLoading: false))
                 }
             }
         }

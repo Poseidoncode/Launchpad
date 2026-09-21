@@ -170,8 +170,9 @@ struct AppGridView: View {
             store.send(.flushPendingSave)
         }
         // Scale is part of icon rasterization; refresh so grid items don't keep soft bitmaps.
+        // Silent and non-forced: no-op display changes are a cheap cache hit.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
-            store.send(.reloadApps)
+            store.send(.refreshIconsAfterScreenChange)
         }
         .onKeyPress(.escape) {
             if store.openFolderID != nil { store.send(.closeFolder); return .handled }

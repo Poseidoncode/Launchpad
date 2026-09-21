@@ -26,6 +26,14 @@ actor AppScanner {
     private var lastScanTime: Date?
     /// Icon size (points) used when `cachedApps` icons were rasterized.
     private var lastScanIconSize: Double?
+    /// Densest display scale at the last screen-change check (`nil` = never checked).
+    private var lastKnownScale: CGFloat?
+    /// Raster epoch: bumped whenever display scale invalidates embedded icons.
+    /// A scan that observes a bump mid-flight discards its results instead of
+    /// caching bitmaps that predate the invalidation (see `scanApps`).
+    /// Memory-pressure invalidation deliberately does NOT bump this: its
+    /// in-flight bitmaps are still correct, only memory-hungry.
+    private var iconEpoch = 0
     private let cacheValidDuration: TimeInterval = 300
     
     // Continuation-based scan serialization — eliminates the race condition
@@ -73,10 +81,18 @@ actor AppScanner {
     }
     
     /// Drop embedded-icon scan results so the next scan re-rasterizes for the new scale.
-    /// IconCache clears itself separately; AppGridView triggers `.reloadApps` for UI.
-    private func handleScreenChange() {
+    /// Only invalidates when the densest scale actually changed; the notification
+    /// also fires for arrangement/colour changes needing no work. IconCache guards
+    /// itself separately; AppGridView triggers `.refreshIconsAfterScreenChange`.
+    private func handleScreenChange() async {
+        let newScale = await MainActor.run {
+            NSImage.preferredBackingScaleFactor()
+        }
+        if let lastKnownScale, lastKnownScale == newScale { return }
+        lastKnownScale = newScale
         Logger.appScanner.info("Screen parameters changed — invalidating scan cache")
         invalidateScanCache()
+        iconEpoch += 1
     }
     
     /// Cached / in-flight icons are sharp enough when the requested size does not
@@ -127,7 +143,23 @@ actor AppScanner {
             currentScanShowHidden = showHidden
             currentScanIconSize = resolvedIconSize
             currentScanWasForced = forceRefresh
+            let epoch = iconEpoch
             let apps = await performScan(showHidden: showHidden, iconSize: resolvedIconSize)
+            
+            if epoch != iconEpoch {
+                // Invalidated mid-scan by a scale change: the embedded icons may
+                // predate it. Discard and retry instead of caching stale bitmaps.
+                // Wake waiters with a stale marker (scanned size 0 never covers
+                // any request) so they retry too rather than accept the payload.
+                isScanning = false
+                currentScanIconSize = 0
+                let waiters = scanContinuations
+                scanContinuations.removeAll()
+                for continuation in waiters {
+                    continuation.resume(returning: [])
+                }
+                continue
+            }
             
             let sorted = apps.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
             // deduplicate by bundleIdentifier — same app from multiple paths shows once
@@ -156,9 +188,11 @@ actor AppScanner {
         for path in searchPaths {
             guard fileManager.fileExists(atPath: path.path) else { continue }
             
+            // Only prefetch the symlink flag we actually read below (cached on the
+            // URL, so the per-app check below hits the cache instead of disk).
             let contents = (try? fileManager.contentsOfDirectory(
                 at: path,
-                includingPropertiesForKeys: [.isApplicationKey, .isSymbolicLinkKey],
+                includingPropertiesForKeys: [.isSymbolicLinkKey],
                 options: showHidden ? [] : [.skipsHiddenFiles]
             )) ?? []
             
@@ -214,8 +248,9 @@ actor AppScanner {
         guard !Task.isCancelled else { return nil }
         
         let bundle = Bundle(url: url)
-        let name = bundle?.infoDictionary?["CFBundleDisplayName"] as? String
-            ?? bundle?.infoDictionary?["CFBundleName"] as? String
+        let info = bundle?.infoDictionary
+        let name = info?["CFBundleDisplayName"] as? String
+            ?? info?["CFBundleName"] as? String
             ?? url.deletingPathExtension().lastPathComponent
         let bundleID = bundle?.bundleIdentifier ?? url.path
         
