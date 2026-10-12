@@ -67,7 +67,7 @@ were run, but interactive GUI behavior still needs a manual macOS run.
 
 ## Verification performed
 
-- `swift test`: **74 tests passed**, 0 failures.
+- `swift test`: **79 tests passed**, 0 failures.
 - `swift build -c release`: passed with no compiler warnings.
 - `./build-app.sh`: produced an app bundle; strict code-signature verification and Info.plist
   validation passed. The signature has no App Sandbox entitlement. The app itself was not launched.

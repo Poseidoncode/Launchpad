@@ -35,3 +35,17 @@ cd Launchpad
 swift build
 .build/debug/Launchpad
 ```
+
+### Upgrading from the sandboxed build
+
+If you previously installed a sandboxed build (stored in `/Applications`), your folder layout,
+custom names, and settings migrate automatically on first launch — no action needed. You can
+delete the old copy at `/Applications/Launchpad.app` once the new one in `~/Applications` works.
+
+### Behavior notes
+
+- Installs, updates, and uninstalls in the watched app directories refresh the grid automatically
+  (events are debounced ~1.5s so install bursts cause a single refresh). A `~/Applications`
+  folder created after launch is picked up by scans but only watched after the next launch.
+- A scan that finds no apps is never cached: an empty result is treated as a transient failure,
+  so the next trigger rescans instead of hiding every app for the cache lifetime.

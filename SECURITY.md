@@ -22,7 +22,9 @@ core workflows need to enumerate and manage app bundles outside its own containe
   from standard application directories. It does not read user documents, contacts, browser data,
   or personal files.
 - **Writes:** Preferences are stored locally in `UserDefaults` under the key
-  `LaunchpadUserPreferences`; a write-ahead staging key is used for crash recovery. The explicit
+  `LaunchpadUserPreferences`; a write-ahead staging key is used for crash recovery. Upgrading from
+  a sandboxed build performs a one-time, local-only import of the preferences left in the old app
+  container (`~/Library/Containers/com.poseidoncode.launchpad/...`); nothing leaves the machine. The explicit
   Move to Trash action moves only the app bundle the user selected, subject to normal macOS file
   permissions and System Integrity Protection.
 - **Filesystem access:** The app runs with the current user's normal filesystem permissions rather

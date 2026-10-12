@@ -33,9 +33,19 @@ actor IconCache {
     
     /// - Parameter desiredSize: Size in **points**. The cached bitmap is created at
     ///   `desiredSize × backingScaleFactor` pixels so Retina displays stay sharp.
+    /// Enables/disables the display-change observer (test hook mirroring
+    /// AppScanner's startObservers:). Safe to call before or after first use.
+    func setScreenObserverEnabled(_ enabled: Bool) {
+        if enabled {
+            screenChangeObserver.start()
+        } else {
+            screenChangeObserver.stop()
+        }
+    }
+
     func icon(for path: String, desiredSize: NSSize = NSSize(width: 128, height: 128)) async -> NSImage? {
         let scale = await backingScaleFactor()
-        let key = cacheKey(path: path, size: desiredSize, scale: scale)
+        let key = await cacheKey(path: path, size: desiredSize, scale: scale)
         
         if let cached = cache.object(forKey: key as NSString) {
             return cached
@@ -99,25 +109,30 @@ actor IconCache {
     }
     
     /// Size component uses `.rounded()` to match `UserPreferences.iconRasterPointFootprint`.
-    private func cacheKey(path: String, size: NSSize, scale: CGFloat) -> String {
+    /// Async so the Info.plist parse on a memo miss runs off the actor.
+    private func cacheKey(path: String, size: NSSize, scale: CGFloat) async -> String {
         let bundleURL = URL(fileURLWithPath: path, isDirectory: true)
         let infoURL = bundleURL
             .appendingPathComponent("Contents", isDirectory: true)
             .appendingPathComponent("Info.plist")
-        let iconNames = memoizedIconNames(for: path, infoURL: infoURL)
+        let iconNames = await memoizedIconNames(for: path, infoURL: infoURL)
         let fingerprint = appBundleIconFingerprint(path: path, iconNames: iconNames)
         return "\(path)_\(Int(size.width.rounded()))x\(Int(size.height.rounded()))@\(scale)#\(fingerprint)"
     }
 
     /// Returns declared icon names, reusing a memoized entry when Info.plist is unchanged.
-    /// Runs on the actor so the dictionary needs no additional synchronization.
-    private func memoizedIconNames(for path: String, infoURL: URL) -> [String] {
+    /// Only the dictionary itself is touched on the actor; the file read +
+    /// plist parse on a miss runs detached so concurrent first-scan lookups
+    /// don't serialize on blocking I/O.
+    private func memoizedIconNames(for path: String, infoURL: URL) async -> [String] {
         let infoModification = (try? infoURL.resourceValues(forKeys: [.contentModificationDateKey]))
             .flatMap(\.contentModificationDate)?.timeIntervalSince1970 ?? 0
         if let entry = iconNameCache[path], entry.infoModification == infoModification {
             return entry.iconNames
         }
-        let iconNames = parseBundleIconNames(infoURL: infoURL)
+        let iconNames = await Task.detached(priority: .utility) {
+            parseBundleIconNames(infoURL: infoURL)
+        }.value
         iconNameCache[path] = (infoModification, iconNames)
         return iconNames
     }
@@ -269,8 +284,10 @@ extension NSImage {
 final class ScreenChangeObserver {
     var handler: (() -> Void)?
     private var token: NSObjectProtocol?
-    
+
     func start() {
+        // Idempotent: IconCache may re-enable after tests disabled it.
+        guard token == nil else { return }
         token = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
@@ -278,6 +295,13 @@ final class ScreenChangeObserver {
         ) { [weak self] _ in
             self?.handler?()
         }
+    }
+
+    func stop() {
+        if let token {
+            NotificationCenter.default.removeObserver(token)
+        }
+        token = nil
     }
     
     deinit {

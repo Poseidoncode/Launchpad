@@ -81,6 +81,11 @@ actor AppScanner {
             self.memoryPressureObserver.start()
             self.screenChangeObserver.start()
             self.appDirectoryObserver.start(watching: searchPaths())
+            Task { await IconCache.shared.setScreenObserverEnabled(true) }
+        } else {
+            // scanApps always touches IconCache.shared via handleScreenChange,
+            // which would otherwise start its display observer even in tests.
+            Task { await IconCache.shared.setScreenObserverEnabled(false) }
         }
     }
     
@@ -232,7 +237,13 @@ actor AppScanner {
                 completedAt: Date(),
                 wasCancelled: false
             )
-            cachedScan = result
+            // Never cache an empty scan: with no apps found we can't tell a
+            // genuinely empty library from a transient enumeration failure,
+            // and caching [] would hide every app until the next trigger.
+            // Waiters still receive this result; only reuse is skipped.
+            if !deduped.isEmpty {
+                cachedScan = result
+            }
             isScanning = false
             
             // Wake all waiters with the exact result and request metadata.
@@ -371,7 +382,10 @@ private final class AppDirectoryObserver {
         stop()
         for directory in directories {
             let fd = open(directory.path, O_EVTONLY)
-            guard fd >= 0 else { continue }
+            guard fd >= 0 else {
+                Logger.appScanner.warning("Cannot watch app directory (unreadable or deleted): \(directory.path, privacy: .private) — installs there won't auto-refresh")
+                continue
+            }
             let source = DispatchSource.makeFileSystemObjectSource(
                 fileDescriptor: fd,
                 eventMask: [.write, .extend, .rename, .delete, .revoke],
@@ -394,10 +408,14 @@ private final class AppDirectoryObserver {
     }
 
     func stop() {
-        debounce?.cancel()
-        debounce = nil
-        sources.forEach { $0.cancel() }
-        sources.removeAll()
+        // schedule() runs on `queue` while stop() runs on the actor executor:
+        // serialize on the queue so the debounce work item can't race.
+        queue.sync {
+            debounce?.cancel()
+            debounce = nil
+            sources.forEach { $0.cancel() }
+            sources.removeAll()
+        }
     }
 
     deinit { stop() }

@@ -908,6 +908,88 @@ final class AppGridTests: XCTestCase {
         await store.skipInFlightEffects()
     }
 
+    func testAppWasTrashedKeepsUnrelatedEmptyFolder() async {
+        let app1 = makeApp(id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!, name: "App1")
+        let app2 = makeApp(id: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!, name: "App2")
+        let emptiedFolder = Folder(name: "Emptied", appIDs: [app1.id])
+        let toolbarFolder = Folder(name: "Toolbar", appIDs: [])
+        var initialState = AppGridFeature.State()
+        initialState.apps = [app1, app2]
+        initialState.folders = [emptiedFolder, toolbarFolder]
+        initialState.appOrder = [app1.id, app2.id]
+        initialState.rebuildAppMap()
+        initialState.rebuildOrderIndexMap()
+        initialState.updateDisplayedApps()
+
+        let store = TestStore(initialState: initialState) {
+            AppGridFeature()
+        }
+
+        await store.send(.appWasTrashed(app1.id)) {
+            $0.apps = [app2]
+            $0.rebuildAppMap()
+            $0.appOrder = [app2.id]
+            $0.rebuildOrderIndexMap()
+            // Only the folder emptied by this trash is dropped; an unrelated
+            // toolbar-created empty folder must survive.
+            $0.folders = [toolbarFolder]
+            $0.updateDisplayedApps()
+        }
+        await store.receive(\.savePreferences)
+        await store.skipInFlightEffects()
+    }
+
+    func testAppWasTrashedClearsStaleKeyboardSelection() async {
+        let app1 = makeApp(id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!, name: "App1")
+        let app2 = makeApp(id: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!, name: "App2")
+        var initialState = AppGridFeature.State()
+        initialState.apps = [app1, app2]
+        initialState.appOrder = [app1.id, app2.id]
+        initialState.rebuildAppMap()
+        initialState.rebuildOrderIndexMap()
+        initialState.updateDisplayedApps()
+        initialState.keyboardSelectedID = app1.id
+
+        let store = TestStore(initialState: initialState) {
+            AppGridFeature()
+        }
+
+        await store.send(.appWasTrashed(app1.id)) {
+            $0.apps = [app2]
+            $0.rebuildAppMap()
+            $0.appOrder = [app2.id]
+            $0.rebuildOrderIndexMap()
+            $0.updateDisplayedApps()
+            // The selected app is gone, so the selection is pruned.
+            $0.keyboardSelectedID = nil
+        }
+        await store.receive(\.savePreferences)
+        await store.skipInFlightEffects()
+    }
+
+    func testFolderSelectionSurvivesGridReorder() async {
+        let app1 = makeApp(id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!, name: "App1")
+        let app2 = makeApp(id: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!, name: "App2")
+        let folder = Folder(name: "Folder")
+        var initialState = AppGridFeature.State()
+        initialState.apps = [app1, app2]
+        initialState.folders = [folder]
+        initialState.appOrder = [app1.id, app2.id]
+        initialState.rebuildAppMap()
+        initialState.rebuildOrderIndexMap()
+        initialState.updateDisplayedApps()
+        initialState.keyboardSelectedID = folder.id
+
+        let store = TestStore(initialState: initialState) {
+            AppGridFeature()
+        }
+        store.exhaustivity = .off
+
+        // Reordering apps hides nothing: a folder selection must be kept.
+        await store.send(.moveAppBefore(id: app2.id, before: app1.id))
+        XCTAssertEqual(store.state.keyboardSelectedID, folder.id)
+    }
+
     private func makeApp(id: UUID, name: String) -> AppItem {
         AppItem(
             id: id,

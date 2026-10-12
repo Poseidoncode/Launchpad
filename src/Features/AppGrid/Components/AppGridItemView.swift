@@ -7,6 +7,9 @@ struct AppGridItem: View {
     let app: AppItem
     let isEditMode: Bool
     let hasActiveDrag: Bool
+    /// True while a folder tile (not an app) is being dragged. Folder-on-app
+    /// drops always no-op, so the cursor declines them upfront instead.
+    var isFolderDragActive: Bool = false
     let store: StoreOf<AppGridFeature>
     var onDragStart: () -> Void
     var onDragEnd: () -> Void
@@ -132,7 +135,7 @@ struct AppGridItem: View {
         .onDrop(of: [.text], delegate: PayloadDropDelegate(
             onEnter: { isCurrentDropTarget = true },
             onExit: { isCurrentDropTarget = false },
-            proposal: isEditMode ? DropProposal(operation: .move) : nil,
+            proposal: isEditMode && !isFolderDragActive ? DropProposal(operation: .move) : nil,
             onDrop: { location, providers in
                 handleDrop(at: location, providers: providers)
             }
@@ -200,12 +203,15 @@ struct AppGridItem: View {
         }
         // Tile width is deterministic (frame below), so the x offset alone
         // disambiguates edge (reorder) from center (folder) — no GeometryReader.
+        // Only the drop point is captured: mode/size are re-read live from the
+        // store below, since the view's copies may be stale if edit mode or
+        // icon size changed between drop and this async callback.
         let x = location.x
-        let width = iconSize + 20
         provider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { item, _ in
             DispatchQueue.main.async {
                 defer { resetDragState() }
-                guard isEditMode,
+                let width = store.preferences.iconSize + 20
+                guard store.isEditMode,
                       case let .app(draggedID) = GridDragPayload.decode(item),
                       draggedID != app.id else { return }
                 if x < width * 0.25 {

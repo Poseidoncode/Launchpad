@@ -101,7 +101,13 @@ struct FolderGridItem: View {
         .accessibilityLabel("\(folder.name), \(folder.appIDs.count) apps")
         .accessibilityAddTraits(.isButton)
         .onHover { isHovered = $0 }
-        .onTapGesture { store.send(.openFolder(folder.id)) }
+        // Gated so tapping the delete badge in edit mode doesn't also open
+        // the folder (the tap would otherwise bubble to this parent handler).
+        .onTapGesture {
+            if !isEditMode {
+                store.send(.openFolder(folder.id))
+            }
+        }
         .contextMenu {
             Button("Rename Folder") {
                 newFolderName = folder.name
@@ -124,6 +130,10 @@ struct FolderGridItem: View {
         .onDrop(of: [.text], delegate: PayloadDropDelegate(
             onEnter: { isDropTargeted = true },
             onExit: { isDropTargeted = false },
+            // No valid drop exists in normal mode (folder reorder is
+            // edit-only), so decline upfront instead of showing a
+            // misleading move cursor that later no-ops.
+            proposal: isEditMode ? DropProposal(operation: .move) : nil,
             onDrop: { location, providers in
                 handleDrop(at: location, providers: providers)
             }
@@ -179,18 +189,21 @@ struct FolderGridItem: View {
         }
         // Tile width is deterministic, so the x offset splits leading/trailing
         // for folder reorder — no GeometryReader needed.
-        let midX = (preferences.iconSize + 20) / 2
         provider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { item, _ in
             DispatchQueue.main.async {
                 defer {
                     onDragEnd()
                     isDropTargeted = false
                 }
+                // Read mode/size live from the store: the view's captured
+                // copies may be stale if edit mode or icon size changed
+                // between drop and this async callback.
+                let midX = (store.preferences.iconSize + 20) / 2
                 switch GridDragPayload.decode(item) {
                 case let .app(uuid):
                     store.send(.addAppToFolder(appID: uuid, folderID: folder.id))
                 case let .folder(draggedID):
-                    guard isEditMode, draggedID != folder.id else { return }
+                    guard store.isEditMode, draggedID != folder.id else { return }
                     if location.x < midX {
                         store.send(.moveFolderBefore(id: draggedID, before: folder.id))
                     } else {

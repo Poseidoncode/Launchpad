@@ -80,8 +80,8 @@ struct UserPreferences: Equatable, Codable {
     }
     
     // Custom Decodable to validate bounds from UserDefaults.
-    // Uses decodeIfPresent so a single corrupted field falls back to its default
-    // instead of discarding all preferences.
+    // Decodes each field independently with try? so a single corrupted field
+    // falls back to its default instead of discarding all preferences.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         // Decode each field independently so one malformed value does not discard

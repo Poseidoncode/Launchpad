@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import Launchpad
 
@@ -39,5 +40,26 @@ final class IconCacheTests: XCTestCase {
         let updatedFingerprint = appBundleIconFingerprint(path: bundleURL.path)
 
         XCTAssertNotEqual(initialFingerprint, updatedFingerprint)
+    }
+
+    func testScreenChangeObserverStopIsIdempotent() async {
+        let observer = ScreenChangeObserver()
+        var fireCount = 0
+        observer.handler = { fireCount += 1 }
+        observer.start()
+        observer.stop()
+        observer.stop()
+        NotificationCenter.default.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        // Delivery targets the main queue, so flush it before asserting.
+        await MainActor.run {}
+        XCTAssertEqual(fireCount, 0, "A stopped observer must not fire")
+        // Re-enabling (e.g. production init after a test disabled the shared
+        // observer) must restore exactly one delivery, not duplicates.
+        observer.start()
+        observer.start()
+        NotificationCenter.default.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        await MainActor.run {}
+        XCTAssertEqual(fireCount, 1, "Re-starting must deliver exactly once")
+        observer.stop()
     }
 }

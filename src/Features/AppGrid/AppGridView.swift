@@ -8,7 +8,11 @@ import UniformTypeIdentifiers
 /// either). Lives as a @StateObject in AppGridView.
 final class OptionEditState: ObservableObject {
     var active = false
+    /// Fired on mouse-up anywhere; the view uses it to clear drag-source
+    /// tracking when a drag is released outside every drop target.
+    var onMouseUp: (() -> Void)?
     private var monitor: Any?
+    private var mouseMonitor: Any?
 
     func start(store: StoreOf<AppGridFeature>) {
         guard monitor == nil else { return }
@@ -26,11 +30,18 @@ final class OptionEditState: ObservableObject {
             }
             return event
         }
+        guard mouseMonitor == nil else { return }
+        mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
+            self?.onMouseUp?()
+            return event
+        }
     }
 
     func stop() {
         if let monitor { NSEvent.removeMonitor(monitor) }
+        if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
         monitor = nil
+        mouseMonitor = nil
         active = false
     }
 }
@@ -213,6 +224,7 @@ struct AppGridView: View {
                                     app: app,
                                     isEditMode: store.isEditMode,
                                     hasActiveDrag: hasActiveDrag,
+                                    isFolderDragActive: draggingFolderID != nil,
                                     store: store,
                                     onDragStart: {
                                         draggingApp = app
@@ -235,9 +247,26 @@ struct AppGridView: View {
         .preferredColorScheme(.dark)
         .onAppear {
             store.send(.onAppear)
+            // A mouse-up with no drop handler having run means the drag was
+            // released outside any target: clear the source tracking so the
+            // tile doesn't stay dimmed. Successful drops clear the same
+            // state in their own handlers, so this is harmless there.
+            optionEdit.onMouseUp = { [appBinding = $draggingApp, folderBinding = $draggingFolderID] in
+                appBinding.wrappedValue = nil
+                folderBinding.wrappedValue = nil
+            }
             optionEdit.start(store: store)
         }
         .onDisappear { optionEdit.stop() }
+        // A cancelled drag (Esc, drop outside any target) fires no drop
+        // handler, which would otherwise leave the source tile dimmed until
+        // the next successful drop. Exiting edit mode always ends the gesture.
+        .onChange(of: store.isEditMode) { _, editing in
+            if !editing {
+                draggingApp = nil
+                draggingFolderID = nil
+            }
+        }
         // Auto-refresh when installs / uninstalls touch the app directories.
         .onReceive(NotificationCenter.default.publisher(for: .launchpadAppsDidChange)) { _ in
             store.send(.externalAppsChanged)
@@ -329,7 +358,11 @@ struct AppGridView: View {
                     store.send(.removeAppFromFolder(appID: draggedID, folderID: openID))
                 }
             }
-            return false
+            // Claim the drop while a folder modal is open — the only case this
+            // handler ever accepts — so a successful drag-out-remove doesn't
+            // play the "failed drop" animation. Acceptance itself is decided
+            // asynchronously above.
+            return store.openFolderID != nil
         }
         .animation(.easeOut(duration: 0.16), value: store.openFolderID)
         // Error banner — uses cancellable timer via store

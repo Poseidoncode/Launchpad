@@ -29,7 +29,7 @@ final class AppScannerTests: XCTestCase {
         XCTAssertEqual(scanModes, [false, false], "A cancelled partial result must not be reused from cache")
     }
 
-    func testEmptyScanResultsAreCached() async {
+    func testEmptyScanResultsAreNotCached() async {
         let counter = ScanCounter()
         let scanner = AppScanner(
             scanOverride: { _, _ in
@@ -44,7 +44,26 @@ final class AppScannerTests: XCTestCase {
         XCTAssertTrue(firstResult.isEmpty)
         XCTAssertTrue(secondResult.isEmpty)
         let scanCount = await counter.count
-        XCTAssertEqual(scanCount, 1, "An empty scan should still be cached for the normal cache lifetime")
+        XCTAssertEqual(scanCount, 2, "An empty scan must not be cached — it may be a transient enumeration failure hiding every app")
+    }
+
+    func testNonEmptyScanResultsAreCached() async {
+        let visible = makeApp(id: "00000000-0000-0000-0000-000000000001", name: "Visible")
+        let counter = ScanCounter()
+        let scanner = AppScanner(
+            scanOverride: { _, _ in
+                await counter.recordScan()
+                return [visible]
+            },
+            startObservers: false
+        )
+
+        let firstResult = await scanner.scanApps()
+        let secondResult = await scanner.scanApps()
+        XCTAssertEqual(firstResult.map(\.id), [visible.id])
+        XCTAssertEqual(secondResult.map(\.id), [visible.id])
+        let scanCount = await counter.count
+        XCTAssertEqual(scanCount, 1, "A successful scan should still be cached for the normal cache lifetime")
     }
 
     func testConcurrentCallerDoesNotReuseCachedResultsFromDifferentVisibilityMode() async {

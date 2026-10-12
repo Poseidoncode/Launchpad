@@ -45,6 +45,14 @@ struct AppGridFeature {
             }
             
             displayedApps = result
+            // Prune a keyboard selection that no longer points at anything
+            // visible (trashed app, foldered-away app). Folder selections are
+            // kept: folders live outside displayedApps by design.
+            if let selected = keyboardSelectedID,
+               !displayedApps.contains(where: { $0.id == selected }),
+               !folders.contains(where: { $0.id == selected }) {
+                keyboardSelectedID = nil
+            }
         }
         
         mutating func rebuildOrderIndexMap() {
@@ -215,19 +223,24 @@ struct AppGridFeature {
                 state.apps.removeAll { $0.id == appID }
                 state.appOrder.removeAll { $0 == appID }
                 var foldersChanged = false
+                // Snapshot BEFORE removal: only folders that held the trashed
+                // app may be dropped if they end up empty. An unrelated empty
+                // folder (e.g. created from the toolbar) must survive.
+                let foldersHoldingTrashedApp = Set(state.folders.filter { $0.appIDs.contains(appID) }.map(\.id))
                 for idx in state.folders.indices {
                     let originalIDs = state.folders[idx].appIDs
                     state.folders[idx].appIDs.removeAll { $0 == appID }
                     foldersChanged = foldersChanged || originalIDs != state.folders[idx].appIDs
                 }
-                // Drop folders emptied by the trash, mirroring removeAppFromFolder.
-                let nonEmptyFolders = state.folders.filter { !$0.appIDs.isEmpty }
-                if nonEmptyFolders.count != state.folders.count {
+                // Drop folders emptied by this trash, mirroring removeAppFromFolder.
+                let survivingFolders = state.folders.filter { !$0.appIDs.isEmpty || !foldersHoldingTrashedApp.contains($0.id) }
+                if survivingFolders.count != state.folders.count {
                     if let openID = state.openFolderID,
-                       state.folders.contains(where: { $0.id == openID && $0.appIDs.isEmpty }) {
+                       foldersHoldingTrashedApp.contains(openID),
+                       survivingFolders.first(where: { $0.id == openID }) == nil {
                         state.openFolderID = nil
                     }
-                    state.folders = nonEmptyFolders
+                    state.folders = survivingFolders
                     foldersChanged = true
                 }
                 guard hadApp || orderCount != state.appOrder.count || foldersChanged else { return .none }
