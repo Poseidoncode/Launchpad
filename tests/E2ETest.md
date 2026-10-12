@@ -1,49 +1,72 @@
-# E2E 測試指南 - 拖拉排序功能
+# E2E / Manual Test Guide
 
-## 測試步驟
+The Swift package's `swift test` target covers reducers and models. `LaunchpadUITests.swift`
+is not wired to an Xcode UI-testing target in this repository, so actual window and drag/drop
+behavior still needs manual verification on macOS.
 
-### 1. 啟動應用程式
+## Important: preferences are persistent
+
+The app stores preferences in `UserDefaults`, not `~/Library/Application Support/Launchpad`.
+The smoke-test scripts intentionally do not delete user data. UI actions such as creating folders
+or renaming apps can persist in the current preference domain. Use a separate macOS test account
+if you need an isolated run.
+
+## Launch
+
 ```bash
-swift build && .build/debug/Launchpad
+swift build
+.build/debug/Launchpad
 ```
 
-### 2. 進入編輯模式
-- 點擊工具列的上下箭頭圖示（或按兩下任何 App）
-- 確認畫面上方顯示「編輯模式：拖曳 App 以重新排序」
+For the packaged app, run `./build-app.sh` and then `open build/Launchpad.app`.
 
-### 3. 測試拖拉排序
-1. **拖曳測試**
-   - 按住任一 App 圖示
-   - 拖曳到另一個位置
-   - 目標位置應該出現藍色邊框指示器
+## Search and folders
 
-2. **放置測試**
-   - 放開滑鼠
-   - App 應該移動到新位置
-   - 顺序應該被保存
+1. Search for an app that is not in a folder and verify case-insensitive matching.
+2. Rename an app, then search by its custom name.
+3. Put an app in a folder, then search for it from the main grid; it should remain findable.
+4. Search for a folder name and open the matching folder.
+5. Remove the app from the folder and verify it returns to the main grid.
 
-3. **視覺回饋測試**
-   - 拖曳時，被拖曳的 App 應該變半透明
-   - 目標位置應該有藍色邊框
-   - 拖曳結束後，指示器應該消失
+## Drag and drop
 
-### 4. 驗證保存
-- 重新啟動應用程式
-- 確認 App 順序保持不變
+- In normal mode, drag an app onto another app: nothing should happen (classic
+  Launchpad ignores drags outside edit mode; order must not change).
+- Enter Edit Mode via the toolbar pencil button, a long-press on an icon, or by
+  holding Option (release Option to leave). Icons should jiggle while editing.
+- In Edit Mode, drop an app on another icon's center to create a folder with both;
+  drop on its leading/trailing edge to reorder before/after it.
+- Drag an app onto a folder to add it; it should disappear from the main grid.
+- Drag a folder onto another folder (Edit Mode) to reorder them.
+- Open a folder and drag an app onto another item inside to reorder; drag it onto
+  the dim backdrop to remove it from the folder. Removing the last app deletes
+  the folder and closes the modal.
+- Verify the dragged item opacity and drop-target indicator clear after a drop.
+- Restart the app and verify order and folder membership persist.
 
-## 預期結果
+## Launch, keyboard, and auto-refresh
 
-| 測試項目 | 預期行為 | 實際結果 |
-|---------|---------|---------|
-| 進入編輯模式 | 顯示編輯模式提示 | □ 通過 □ 失敗 |
-| 拖曳視覺回饋 | App 變半透明 | □ 通過 □ 失敗 |
-| Drop target 指示器 | 藍色邊框出現 | □ 通過 □ 失敗 |
-| 放置後排序 | App 移動到新位置 | □ 通過 □ 失敗 |
-| 順序保存 | 重啟後順序不變 | □ 通過 □ 失敗 |
+- Click an app (main grid or inside a folder) and verify the app launches, the
+  folder modal closes, and Launchpad hides itself.
+- With the main grid focused: arrow keys move the selection ring, Enter launches
+  the selected app (or opens the selected folder), Enter with no selection
+  launches the first app. Arrows are ignored while typing in search.
+- Install or remove an app in /Applications while Launchpad is open and verify
+  the grid refreshes by itself within a couple of seconds (no Refresh needed).
+- In Edit Mode, only Mac App Store apps show the red minus badge; other apps can
+  still be moved to Trash from the right-click menu.
 
-## 已知問題修復
+## Folder dismissal and settings
 
-修復內容：
-1. 添加 `hasActiveDrag` 參數，讓 drop target 指示器正確顯示
-2. 修復 `.onDrop` 的 `isTargeted` 綁定，確保 `onDropEnter`/`onDropExit` 被調用
-3. 修正指示器條件從 `isDropTarget && isDragging` 改為 `isDropTarget && hasActiveDrag`
+1. Open a folder and dismiss it with the Close button, Escape, and a click outside the folder panel.
+2. Open and close a folder repeatedly; verify the UI remains responsive.
+3. Change icon size, columns, and Show hidden apps in Settings. Verify layout, icon sharpness,
+   and app visibility update without resetting folders or custom names.
+
+## Automated checks
+
+- `swift test` runs the package unit tests.
+- `tests/test-launch.sh` is a manual smoke test; it builds and launches the app and prints process
+  resource usage.
+- `tests/run-e2e-test.sh` requires Accessibility permission and provides limited AppleScript
+  diagnostics. It is not a substitute for the manual checks above.

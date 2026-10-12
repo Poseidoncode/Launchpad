@@ -7,11 +7,16 @@ struct FolderGridItem: View {
     let folder: Folder
     let preferences: UserPreferences
     let store: StoreOf<AppGridFeature>
-    let isEditMode: Bool
+    var onDragEnd: () -> Void
+    var onDragStart: () -> Void = {}
+    var isEditMode: Bool = false
+    var hasActiveDrag: Bool = false
 
     @State private var isHovered = false
     @State private var isDropTargeted = false
+    @State private var isDraggingLocal = false
     @State private var showRenameSheet = false
+    @State private var showDeleteConfirmation = false
     @State private var newFolderName = ""
 
     var previewApps: [AppItem] {
@@ -30,7 +35,31 @@ struct FolderGridItem: View {
                     .frame(width: preferences.iconSize, height: preferences.iconSize)
                     .shadow(color: .black.opacity(0.3), radius: 4, y: 2)
 
-                Group {
+                ZStack {
+                    // Edit-mode delete badge (folders only hold references, so
+                    // deleting one just returns its apps to the grid — always safe).
+                    if isEditMode {
+                        VStack {
+                            HStack {
+                                Spacer()
+                                Button {
+                                    showDeleteConfirmation = true
+                                } label: {
+                                    Image(systemName: "minus.circle.fill")
+                                        .foregroundStyle(.red)
+                                        .font(.system(size: 16))
+                                        .background(Circle().fill(.white))
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Delete folder \(folder.name)")
+                            }
+                            Spacer()
+                        }
+                        .frame(width: preferences.iconSize, height: preferences.iconSize)
+                        .zIndex(1)
+                    }
+
+                    Group {
                     if previewApps.isEmpty {
                         Image(systemName: "folder")
                             .font(.system(size: preferences.iconSize * 0.4))
@@ -42,19 +71,22 @@ struct FolderGridItem: View {
                             spacing: 2
                         ) {
                             ForEach(previewApps) { app in
-                                if let icon = app.icon {
-                                    Image(nsImage: icon)
-                                        .resizable()
-                                        .aspectRatio(contentMode: .fit)
-                                        .frame(width: previewSize, height: previewSize)
-                                }
+                                AppIconView(
+                                    app: app,
+                                    size: CGFloat(previewSize),
+                                    rasterPointSize: CGFloat(UserPreferences.iconRasterPointSize(preferences.iconSize))
+                                )
                             }
                         }
                         .padding(6)
                         .frame(width: preferences.iconSize, height: preferences.iconSize)
                     }
+                    }
                 }
+                .jiggling(active: isEditMode)
+                .opacity(isDraggingLocal ? 0.4 : 1.0)
             }
+            .keyboardSelected(store.keyboardSelectedID == folder.id)
             .scaleEffect(isHovered ? CGFloat(UserPreferences.iconHoverScale) : 1.0)
             .animation(.spring(response: 0.25, dampingFraction: 0.6), value: isHovered)
 
@@ -80,19 +112,36 @@ struct FolderGridItem: View {
                 store.send(.deleteFolder(id: folder.id))
             }
         }
-        // Accept dropped apps into this folder
-        .onDrop(of: [UTType.text], isTargeted: $isDropTargeted) { providers in
-            guard let provider = providers.first else { return false }
-
-            provider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { item, _ in
-                DispatchQueue.main.async {
-                    guard let draggedIDStr = draggedIDString(from: item),
-                          let uuid = UUID(uuidString: draggedIDStr) else { return }
-
-                    store.send(.addAppToFolder(appID: uuid, folderID: folder.id))
-                }
+        // Drag the folder itself (reorder, Fix 8) with a prefixed payload so
+        // drop sites can distinguish folder drags from app drags.
+        .onDrag {
+            onDragStart()
+            isDraggingLocal = true
+            return GridDragPayload.folderProvider(folder.id)
+        }
+        // Accept dropped apps into this folder (any mode, classic behavior);
+        // folder-on-folder drops reorder by horizontal half (edit mode only).
+        .onDrop(of: [.text], delegate: PayloadDropDelegate(
+            onEnter: { isDropTargeted = true },
+            onExit: { isDropTargeted = false },
+            onDrop: { location, providers in
+                handleDrop(at: location, providers: providers)
             }
-            return true
+        ))
+        .onChange(of: hasActiveDrag) { _, isActive in
+            if !isActive {
+                isDraggingLocal = false
+            }
+        }
+        .confirmationDialog(
+            "Delete folder \"\(folder.name)\"? Its apps stay in the grid.",
+            isPresented: $showDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Delete Folder", role: .destructive) {
+                store.send(.deleteFolder(id: folder.id))
+            }
+            Button("Cancel", role: .cancel) {}
         }
         .sheet(isPresented: $showRenameSheet) {
             VStack(spacing: 16) {
@@ -121,5 +170,37 @@ struct FolderGridItem: View {
             .padding()
             .frame(width: 280)
         }
+    }
+
+    private func handleDrop(at location: CGPoint, providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first else {
+            onDragEnd()
+            return false
+        }
+        // Tile width is deterministic, so the x offset splits leading/trailing
+        // for folder reorder — no GeometryReader needed.
+        let midX = (preferences.iconSize + 20) / 2
+        provider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { item, _ in
+            DispatchQueue.main.async {
+                defer {
+                    onDragEnd()
+                    isDropTargeted = false
+                }
+                switch GridDragPayload.decode(item) {
+                case let .app(uuid):
+                    store.send(.addAppToFolder(appID: uuid, folderID: folder.id))
+                case let .folder(draggedID):
+                    guard isEditMode, draggedID != folder.id else { return }
+                    if location.x < midX {
+                        store.send(.moveFolderBefore(id: draggedID, before: folder.id))
+                    } else {
+                        store.send(.moveFolderAfter(id: draggedID, after: folder.id))
+                    }
+                case nil:
+                    break
+                }
+            }
+        }
+        return true
     }
 }

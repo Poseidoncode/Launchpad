@@ -8,19 +8,26 @@ struct AppItem: Identifiable, Equatable, Codable {
     var bundleIdentifier: String
     var path: URL
     var icon: NSImage?
-    
+    /// True when the bundle carries a `_MASReceipt`, i.e. it was installed from
+    /// the Mac App Store. Only these show the edit-mode delete badge, matching
+    /// classic Launchpad (which never offered deletion for other apps).
+    /// Recomputed on every scan; intentionally excluded from Codable and `==`.
+    var isAppStoreApp: Bool = false
+
     init(
         id: UUID,
         name: String,
         bundleIdentifier: String,
         path: URL,
-        icon: NSImage? = nil
+        icon: NSImage? = nil,
+        isAppStoreApp: Bool = false
     ) {
         self.id = id
         self.name = name
         self.bundleIdentifier = bundleIdentifier
         self.path = path
         self.icon = icon
+        self.isAppStoreApp = isAppStoreApp
     }
     
     enum CodingKeys: String, CodingKey {

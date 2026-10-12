@@ -5,27 +5,37 @@ import OSLog
 actor AppScanner {
     static let shared = AppScanner()
     
-    private let searchPaths: [URL] = {
+    /// Resolve search roots for each scan so a newly created ~/Applications directory
+    /// is discovered without requiring an app restart.
+    private nonisolated func searchPaths() -> [URL] {
         var paths: [URL] = [
-            URL(fileURLWithPath: "/Applications"),
-            URL(fileURLWithPath: "/System/Applications"),
-            URL(fileURLWithPath: "/System/Applications/Utilities")
+            URL(fileURLWithPath: "/Applications", isDirectory: true),
+            URL(fileURLWithPath: "/System/Applications", isDirectory: true),
+            URL(fileURLWithPath: "/System/Applications/Utilities", isDirectory: true)
         ]
-        // Under App Sandbox, NSHomeDirectory() returns the container directory,
-        // not the real user home. Only add ~/Applications when not sandboxed.
-        // We detect sandbox by checking if the container directory exists.
-        let realHome = FileManager.default.homeDirectoryForCurrentUser
-        let userApps = realHome.appendingPathComponent("Applications")
-        if FileManager.default.fileExists(atPath: userApps.path) {
+        let userApps = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Applications", isDirectory: true)
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: userApps.path, isDirectory: &isDirectory),
+           isDirectory.boolValue {
             paths.append(userApps)
         }
         return paths
-    }()
+    }
     
-    private var cachedApps: [AppItem] = []
-    private var lastScanTime: Date?
-    /// Icon size (points) used when `cachedApps` icons were rasterized.
-    private var lastScanIconSize: Double?
+    private struct ScanResult {
+        let apps: [AppItem]
+        let showHidden: Bool
+        let iconSize: Double
+        let wasForced: Bool
+        let iconEpoch: Int
+        let completedAt: Date
+        let wasCancelled: Bool
+    }
+
+    private var cachedScan: ScanResult?
+    /// Optional scan operation for deterministic cache/concurrency tests.
+    private let scanOverride: ((Bool, Double) async -> [AppItem])?
     /// Densest display scale at the last screen-change check (`nil` = never checked).
     private var lastKnownScale: CGFloat?
     /// Raster epoch: bumped whenever display scale invalidates embedded icons.
@@ -36,48 +46,66 @@ actor AppScanner {
     private var iconEpoch = 0
     private let cacheValidDuration: TimeInterval = 300
     
-    // Continuation-based scan serialization — eliminates the race condition
-    private var scanContinuations: [CheckedContinuation<[AppItem], Never>] = []
+    // Continuations serialize incompatible scans while allowing compatible callers
+    // to reuse the exact result that woke them, without consulting mutable metadata.
+    private var scanContinuations: [CheckedContinuation<ScanResult, Never>] = []
     private var isScanning = false
-    private var currentScanShowHidden: Bool = false
-    /// Icon size of the in-flight / just-completed scan (for waiter compatibility).
-    private var currentScanIconSize: Double = 0
-    /// Whether the in-flight / just-completed scan was started with `forceRefresh`.
-    /// Waiters that also requested forceRefresh can reuse that result instead of looping forever.
-    private var currentScanWasForced = false
     
     // Retain observers via helper classes to avoid
     // nonisolated(unsafe) on the actor (Swift 5.9 compatibility).
     private nonisolated let memoryPressureObserver: MemoryPressureObserver
     private nonisolated let screenChangeObserver: ScreenChangeObserver
+    private nonisolated let appDirectoryObserver: AppDirectoryObserver
     
-    private init() {
+    init(
+        scanOverride: ((Bool, Double) async -> [AppItem])? = nil,
+        startObservers: Bool = true
+    ) {
+        self.scanOverride = scanOverride
         // Initialise all stored properties first so self is fully initialised
         // before any closure captures it (even weakly).
         self.memoryPressureObserver = MemoryPressureObserver()
         self.screenChangeObserver = ScreenChangeObserver()
-        
+        self.appDirectoryObserver = AppDirectoryObserver()
+
         self.memoryPressureObserver.handler = { [weak self] in
             Task { await self?.handleMemoryPressure() }
         }
-        self.memoryPressureObserver.start()
-        
         self.screenChangeObserver.handler = { [weak self] in
             Task { await self?.handleScreenChange() }
         }
-        self.screenChangeObserver.start()
+        self.appDirectoryObserver.handler = { [weak self] in
+            Task { await self?.handleAppDirectoryChange() }
+        }
+        if startObservers {
+            self.memoryPressureObserver.start()
+            self.screenChangeObserver.start()
+            self.appDirectoryObserver.start(watching: searchPaths())
+        }
     }
     
     private func invalidateScanCache() {
-        cachedApps = []
-        lastScanTime = nil
-        lastScanIconSize = nil
+        cachedScan = nil
     }
     
-    private func handleMemoryPressure() {
+    /// An install / uninstall / update touched an app directory. Drop the cache
+    /// and tell the UI to rescan silently; the rescan itself is debounced at the
+    /// observer so install bursts ( dozens of writes) cause a single refresh.
+    private func handleAppDirectoryChange() async {
+        Logger.appScanner.info("App directory changed — invalidating scan cache")
+        invalidateScanCache()
+        await MainActor.run {
+            NotificationCenter.default.post(name: .launchpadAppsDidChange, object: nil)
+        }
+    }
+
+    private func handleMemoryPressure() async {
         Logger.appScanner.warning("Memory pressure detected — clearing icon cache")
         invalidateScanCache()
-        Task { await IconCache.shared.clear() }
+        await IconCache.shared.clear()
+        await MainActor.run {
+            NotificationCenter.default.post(name: .launchpadMemoryPressure, object: nil)
+        }
     }
     
     /// Drop embedded-icon scan results so the next scan re-rasterizes for the new scale.
@@ -88,6 +116,8 @@ actor AppScanner {
         let newScale = await MainActor.run {
             NSImage.preferredBackingScaleFactor()
         }
+        // Update IconCache before any caller can reuse icons at the old scale.
+        await IconCache.shared.updateBackingScale(to: newScale)
         if let lastKnownScale, lastKnownScale == newScale { return }
         lastKnownScale = newScale
         Logger.appScanner.info("Screen parameters changed — invalidating scan cache")
@@ -110,71 +140,106 @@ actor AppScanner {
         iconSize: Double? = nil
     ) async -> [AppItem] {
         let resolvedIconSize = iconSize ?? PreferencesStore.load().iconSize
+
+        // Notifications are delivered asynchronously. Check the scale before a
+        // cache hit so a screen-change refresh cannot race the notification task.
+        await handleScreenChange()
         
         while true {
             if !forceRefresh,
-               let lastScan = lastScanTime,
-               let lastIconSize = lastScanIconSize,
-               Date().timeIntervalSince(lastScan) < cacheValidDuration,
-               !cachedApps.isEmpty,
-               currentScanShowHidden == showHidden,
-               iconsCover(requestedSize: resolvedIconSize, scannedSize: lastIconSize) {
-                return cachedApps
+               let cachedScan,
+               cachedScan.iconEpoch == iconEpoch,
+               Date().timeIntervalSince(cachedScan.completedAt) < cacheValidDuration,
+               cachedScan.showHidden == showHidden,
+               iconsCover(requestedSize: resolvedIconSize, scannedSize: cachedScan.iconSize) {
+                return cachedScan.apps
             }
             
-            // If a scan is already in progress, wait for its result.
-            // Reuse it when showHidden matches, icons cover our size, and we
-            // either did not request a force refresh or the completed scan was forced.
+            // Wait for the active scan, then validate its immutable metadata.
+            // If it does not satisfy this request, loop and start/join a suitable scan.
             if isScanning {
                 let result = await withCheckedContinuation { continuation in
                     scanContinuations.append(continuation)
                 }
-                if currentScanShowHidden == showHidden,
-                   iconsCover(requestedSize: resolvedIconSize, scannedSize: currentScanIconSize),
-                   (!forceRefresh || currentScanWasForced) {
-                    return result
+                if !result.wasCancelled,
+                   result.iconEpoch == iconEpoch,
+                   result.showHidden == showHidden,
+                   iconsCover(requestedSize: resolvedIconSize, scannedSize: result.iconSize),
+                   (!forceRefresh || result.wasForced) {
+                    return result.apps
                 }
-                // Stale relative to our request — loop and try again (another
-                // waiter may already have started the scan we need).
                 continue
             }
             
             isScanning = true
-            currentScanShowHidden = showHidden
-            currentScanIconSize = resolvedIconSize
-            currentScanWasForced = forceRefresh
             let epoch = iconEpoch
-            let apps = await performScan(showHidden: showHidden, iconSize: resolvedIconSize)
+            let apps: [AppItem]
+            if let scanOverride {
+                apps = await scanOverride(showHidden, resolvedIconSize)
+            } else {
+                apps = await performScan(showHidden: showHidden, iconSize: resolvedIconSize)
+            }
             
-            if epoch != iconEpoch {
-                // Invalidated mid-scan by a scale change: the embedded icons may
-                // predate it. Discard and retry instead of caching stale bitmaps.
-                // Wake waiters with a stale marker (scanned size 0 never covers
-                // any request) so they retry too rather than accept the payload.
+            if Task.isCancelled {
                 isScanning = false
-                currentScanIconSize = 0
+                let cancelledResult = ScanResult(
+                    apps: [],
+                    showHidden: showHidden,
+                    iconSize: resolvedIconSize,
+                    wasForced: forceRefresh,
+                    iconEpoch: epoch,
+                    completedAt: Date(),
+                    wasCancelled: true
+                )
                 let waiters = scanContinuations
                 scanContinuations.removeAll()
                 for continuation in waiters {
-                    continuation.resume(returning: [])
+                    continuation.resume(returning: cancelledResult)
+                }
+                return []
+            }
+
+            if epoch != iconEpoch {
+                // Invalidation during the scan means its embedded bitmaps are stale.
+                isScanning = false
+                let staleResult = ScanResult(
+                    apps: [],
+                    showHidden: showHidden,
+                    iconSize: resolvedIconSize,
+                    wasForced: forceRefresh,
+                    iconEpoch: epoch,
+                    completedAt: Date(),
+                    wasCancelled: false
+                )
+                let waiters = scanContinuations
+                scanContinuations.removeAll()
+                for continuation in waiters {
+                    continuation.resume(returning: staleResult)
                 }
                 continue
             }
             
             let sorted = apps.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-            // deduplicate by bundleIdentifier — same app from multiple paths shows once
+            // Deduplicate by bundle identifier — same app from multiple paths shows once.
             var seenIDs = Set<String>()
             let deduped = sorted.filter { seenIDs.insert($0.bundleIdentifier).inserted }
-            cachedApps = deduped
-            lastScanTime = Date()
-            lastScanIconSize = resolvedIconSize
+            let result = ScanResult(
+                apps: deduped,
+                showHidden: showHidden,
+                iconSize: resolvedIconSize,
+                wasForced: forceRefresh,
+                iconEpoch: epoch,
+                completedAt: Date(),
+                wasCancelled: false
+            )
+            cachedScan = result
             isScanning = false
             
-            // Wake all waiters with the same result
+            // Wake all waiters with the exact result and request metadata.
             let waiters = scanContinuations
             scanContinuations.removeAll()
             for continuation in waiters {
-                continuation.resume(returning: deduped)
+                continuation.resume(returning: result)
             }
             
             return deduped
@@ -185,16 +250,24 @@ actor AppScanner {
         var apps: [AppItem] = []
         let fileManager = FileManager.default
         
-        for path in searchPaths {
+        for path in searchPaths() {
             guard fileManager.fileExists(atPath: path.path) else { continue }
             
             // Only prefetch the symlink flag we actually read below (cached on the
             // URL, so the per-app check below hits the cache instead of disk).
-            let contents = (try? fileManager.contentsOfDirectory(
-                at: path,
-                includingPropertiesForKeys: [.isSymbolicLinkKey],
-                options: showHidden ? [] : [.skipsHiddenFiles]
-            )) ?? []
+            let contents: [URL]
+            do {
+                contents = try fileManager.contentsOfDirectory(
+                    at: path,
+                    includingPropertiesForKeys: [.isSymbolicLinkKey],
+                    options: showHidden ? [] : [.skipsHiddenFiles]
+                )
+            } catch {
+                Logger.appScanner.warning(
+                    "Could not enumerate app directory \(path.path, privacy: .private): \(error.localizedDescription, privacy: .public)"
+                )
+                continue
+            }
             
             // Filter to .app bundles and skip symlinks (path traversal hardening)
             let appURLs = contents.filter { url in
@@ -204,7 +277,7 @@ actor AppScanner {
                     return resourceValues.isSymbolicLink == false
                 } catch {
                     // Fail-closed: exclude URLs we cannot verify
-                    Logger.appScanner.warning("Could not check symlink status for \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                    Logger.appScanner.warning("Could not check symlink status for \(url.path, privacy: .private): \(error.localizedDescription, privacy: .public)")
                     return false
                 }
             }
@@ -253,6 +326,11 @@ actor AppScanner {
             ?? info?["CFBundleName"] as? String
             ?? url.deletingPathExtension().lastPathComponent
         let bundleID = bundle?.bundleIdentifier ?? url.path
+        // Mac App Store installs carry a store receipt; classic Launchpad only
+        // offered deletion for these. A single stat per app keeps this cheap.
+        let isAppStoreApp = FileManager.default.fileExists(
+            atPath: url.appendingPathComponent("Contents/_MASReceipt/receipt", isDirectory: false).path
+        )
         
         // Match the user's icon size (points), with headroom for hover scale.
         // IconCache rasterizes at points × Retina scale so the grid stays sharp.
@@ -267,9 +345,62 @@ actor AppScanner {
             name: name,
             bundleIdentifier: bundleID,
             path: url,
-            icon: icon
+            icon: icon,
+            isAppStoreApp: isAppStoreApp
         )
     }
+}
+
+/// Watches the app search directories for installs / uninstalls / updates so
+/// newly installed apps appear without a manual refresh (classic Launchpad
+/// behavior). Uses one O_EVTONLY fd + DispatchSource per directory and debounces
+/// bursts, since a single install produces many filesystem events.
+///
+/// Resolves directories once at start; a `~/Applications` created later is still
+/// picked up by each scan's dynamic path resolution (just not watched until
+/// the next launch).
+private final class AppDirectoryObserver {
+    var handler: (() -> Void)?
+    private var sources: [DispatchSourceFileSystemObject] = []
+    private var debounce: DispatchWorkItem?
+    private let queue = DispatchQueue(label: "com.poseidoncode.launchpad.appdir-observer")
+
+    init() {}
+
+    func start(watching directories: [URL]) {
+        stop()
+        for directory in directories {
+            let fd = open(directory.path, O_EVTONLY)
+            guard fd >= 0 else { continue }
+            let source = DispatchSource.makeFileSystemObjectSource(
+                fileDescriptor: fd,
+                eventMask: [.write, .extend, .rename, .delete, .revoke],
+                queue: queue
+            )
+            source.setEventHandler { [weak self] in self?.schedule() }
+            // Balance the open(2): each source owns its fd.
+            source.setCancelHandler { close(fd) }
+            source.resume()
+            sources.append(source)
+        }
+    }
+
+    private func schedule() {
+        debounce?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.handler?() }
+        debounce = work
+        // Installs write many files; settle before rescanning once.
+        queue.asyncAfter(deadline: .now() + 1.5, execute: work)
+    }
+
+    func stop() {
+        debounce?.cancel()
+        debounce = nil
+        sources.forEach { $0.cancel() }
+        sources.removeAll()
+    }
+
+    deinit { stop() }
 }
 
 // Helper class to retain the DispatchSource without requiring

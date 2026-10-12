@@ -1,5 +1,7 @@
 import SwiftUI
 import ComposableArchitecture
+import AppKit
+import UniformTypeIdentifiers
 
 struct FolderDetailView: View {
     let folderID: UUID
@@ -8,6 +10,7 @@ struct FolderDetailView: View {
     @State private var isEditingName = false
     @State private var editedName = ""
     @State private var folderSearchQuery = ""
+    @State private var dropTargetID: UUID? = nil
 
     private var columns: [GridItem] {
         Array(repeating: GridItem(.flexible(), spacing: 8), count: max(store.preferences.columns, 1))
@@ -140,7 +143,7 @@ struct FolderDetailView: View {
                                 Text("This folder is empty")
                                     .font(.system(size: 15, weight: .medium))
                                     .foregroundStyle(.white.opacity(0.75))
-                                Text("Drag apps here to add them to this folder")
+                                Text("Close this folder, then drag apps onto its tile to add them")
                                     .font(.system(size: 12))
                                     .foregroundStyle(.white.opacity(0.5))
                             }
@@ -150,12 +153,11 @@ struct FolderDetailView: View {
                             LazyVGrid(columns: columns, spacing: 20) {
                                 ForEach(filteredApps) { app in
                                     VStack(spacing: 5) {
-                                        if let icon = app.icon {
-                                            Image(nsImage: icon)
-                                                .resizable()
-                                                .aspectRatio(contentMode: .fit)
-                                                .frame(width: store.preferences.iconSize, height: store.preferences.iconSize)
-                                        }
+                                        AppIconView(
+                                            app: app,
+                                            size: CGFloat(store.preferences.iconSize),
+                                            rasterPointSize: CGFloat(UserPreferences.iconRasterPointSize(store.preferences.iconSize))
+                                        )
                                         Text(app.name)
                                             .font(.system(size: 11))
                                             .foregroundStyle(.white)
@@ -165,9 +167,15 @@ struct FolderDetailView: View {
                                     }
                                     .frame(width: store.preferences.iconSize + 20)
                                     .contentShape(Rectangle())
+                                    .overlay {
+                                        if dropTargetID == app.id {
+                                            RoundedRectangle(cornerRadius: 14)
+                                                .stroke(Color.accentColor, lineWidth: 3)
+                                        }
+                                    }
                                     .accessibilityLabel(app.name)
                                     .accessibilityAddTraits(.isButton)
-                                    .accessibilityHint("Double-click to launch")
+                                    .accessibilityHint("Click to launch")
                                     .onTapGesture {
                                         store.send(.launchApp(app))
                                     }
@@ -178,6 +186,24 @@ struct FolderDetailView: View {
                                             store.send(.removeAppFromFolder(appID: app.id, folderID: folder.id))
                                         }
                                     }
+                                    // Classic parity: drag out of the folder to
+                                    // remove (drop on the dim backdrop), drag
+                                    // between items to reorder within the folder.
+                                    .onDrag {
+                                        GridDragPayload.appProvider(app.id)
+                                    }
+                                    .onDrop(of: [.text], delegate: PayloadDropDelegate(
+                                        onEnter: { dropTargetID = app.id },
+                                        onExit: { if dropTargetID == app.id { dropTargetID = nil } },
+                                        onDrop: { location, providers in
+                                            handleItemDrop(
+                                                at: location,
+                                                providers: providers,
+                                                target: app,
+                                                folderID: folder.id
+                                            )
+                                        }
+                                    ))
                                 }
                             }
                             .padding(.horizontal, 20)
@@ -203,5 +229,47 @@ struct FolderDetailView: View {
                     .onAppear { store.send(.closeFolder) }
             }
         }
+        .onChange(of: store.openFolderID) { dropTargetID = nil }
+    }
+
+    private func handleItemDrop(
+        at location: CGPoint,
+        providers: [NSItemProvider],
+        target: AppItem,
+        folderID: UUID
+    ) -> Bool {
+        guard let provider = providers.first else {
+            dropTargetID = nil
+            return false
+        }
+        // Item width matches the main grid (`iconSize + 20`); left half
+        // inserts before the target, right half after. Center never nests —
+        // classic Launchpad has no folders-in-folders.
+        let before = location.x < (store.preferences.iconSize + 20) / 2
+        provider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { item, _ in
+            DispatchQueue.main.async {
+                defer { dropTargetID = nil }
+                guard case let .app(draggedID) = GridDragPayload.decode(item),
+                      draggedID != target.id else { return }
+                if store.appMap[draggedID] == nil {
+                    return
+                }
+                // Membership is read back from the store at drop time so a
+                // folder edit between drag-start and drop can't misroute.
+                let isMember = store.folders
+                    .first(where: { $0.id == folderID })?.appIDs.contains(draggedID) == true
+                if isMember {
+                    if before {
+                        store.send(.moveAppInFolderBefore(id: draggedID, before: target.id, folderID: folderID))
+                    } else {
+                        store.send(.moveAppInFolderAfter(id: draggedID, after: target.id, folderID: folderID))
+                    }
+                } else {
+                    // Dragged in from the main grid — join the folder.
+                    store.send(.addAppToFolder(appID: draggedID, folderID: folderID))
+                }
+            }
+        }
+        return true
     }
 }

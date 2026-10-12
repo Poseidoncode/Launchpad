@@ -5,6 +5,8 @@ extension Notification.Name {
     // Kept for backward compatibility — no longer used for inter-store communication.
     // The RootFeature now handles cross-feature state sync directly.
     static let launchpadPreferencesDidChange = Notification.Name("LaunchpadPreferencesDidChange")
+    static let launchpadMemoryPressure = Notification.Name("LaunchpadMemoryPressure")
+    static let launchpadAppsDidChange = Notification.Name("LaunchpadAppsDidChange")
 }
 
 enum PreferencesStore {

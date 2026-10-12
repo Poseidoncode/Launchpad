@@ -84,12 +84,14 @@ struct UserPreferences: Equatable, Codable {
     // instead of discarding all preferences.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        appOrder = try container.decodeIfPresent([UUID].self, forKey: .appOrder) ?? []
-        folders = try container.decodeIfPresent([Folder].self, forKey: .folders) ?? []
-        showHiddenApps = try container.decodeIfPresent(Bool.self, forKey: .showHiddenApps) ?? false
-        iconSize = Self.clampIconSize(try container.decodeIfPresent(Double.self, forKey: .iconSize) ?? 60)
-        columns = Self.clampColumns(try container.decodeIfPresent(Int.self, forKey: .columns) ?? 7)
-        customAppNames = try container.decodeIfPresent([String: String].self, forKey: .customAppNames) ?? [:]
+        // Decode each field independently so one malformed value does not discard
+        // otherwise valid layout and naming preferences.
+        appOrder = (try? container.decode([UUID].self, forKey: .appOrder)) ?? []
+        folders = (try? container.decode([Folder].self, forKey: .folders)) ?? []
+        showHiddenApps = (try? container.decode(Bool.self, forKey: .showHiddenApps)) ?? false
+        iconSize = Self.clampIconSize((try? container.decode(Double.self, forKey: .iconSize)) ?? 60)
+        columns = Self.clampColumns((try? container.decode(Int.self, forKey: .columns)) ?? 7)
+        customAppNames = (try? container.decode([String: String].self, forKey: .customAppNames)) ?? [:]
     }
     
     // Custom Encodable to handle Clamped property wrappers

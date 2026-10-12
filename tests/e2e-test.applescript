@@ -1,7 +1,7 @@
 #!/usr/bin/osascript
 
 -- E2E Test for Launchpad
--- Tests: Folder creation, opening, and background click dismissal
+-- Accessibility smoke diagnostics for the running app; detailed folder interactions are manual
 -- Requires: Assistive access permission
 
 use AppleScript version "2.5"
@@ -85,8 +85,8 @@ on run
                 -- Test 3: Test Escape key
                 log "Test 3: Testing Escape key..."
                 try
-                    -- Press Escape key
-                    keystroke "esc" using {command down}
+                    -- Press Escape without a modifier (key code 53).
+                    key code 53
                     delay 1
                     log "✓ Escape key pressed"
                 on error errMsg

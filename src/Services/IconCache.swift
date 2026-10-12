@@ -11,6 +11,10 @@ actor IconCache {
     /// Refreshed on screen-parameter changes, dropping bitmaps only when the
     /// scale itself actually changed.
     private var cachedScale: CGFloat?
+    /// Memoized Info.plist icon names per bundle path. The value records the
+    /// Info.plist modification date so an app update invalidates the entry.
+    /// Without this, every cache-key computation would re-read the plist.
+    private var iconNameCache: [String: (infoModification: Double, iconNames: [String])] = [:]
     
     private nonisolated let screenChangeObserver: ScreenChangeObserver
     
@@ -82,16 +86,40 @@ actor IconCache {
         let newScale = await MainActor.run {
             NSImage.preferredBackingScaleFactor()
         }
-        if cachedScale == newScale { return }
-        cachedScale = newScale
+        updateBackingScale(to: newScale)
+    }
+
+    /// Synchronize the cache scale before a scan can reuse cached app icons.
+    func updateBackingScale(to scale: CGFloat) {
+        guard cachedScale != scale else { return }
+        cachedScale = scale
         // Scale is part of the cache key; drop entries so the next lookup
         // re-rasterizes for the new densest display.
         cache.removeAllObjects()
     }
     
     /// Size component uses `.rounded()` to match `UserPreferences.iconRasterPointFootprint`.
-    private nonisolated func cacheKey(path: String, size: NSSize, scale: CGFloat) -> String {
-        "\(path)_\(Int(size.width.rounded()))x\(Int(size.height.rounded()))@\(scale)"
+    private func cacheKey(path: String, size: NSSize, scale: CGFloat) -> String {
+        let bundleURL = URL(fileURLWithPath: path, isDirectory: true)
+        let infoURL = bundleURL
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("Info.plist")
+        let iconNames = memoizedIconNames(for: path, infoURL: infoURL)
+        let fingerprint = appBundleIconFingerprint(path: path, iconNames: iconNames)
+        return "\(path)_\(Int(size.width.rounded()))x\(Int(size.height.rounded()))@\(scale)#\(fingerprint)"
+    }
+
+    /// Returns declared icon names, reusing a memoized entry when Info.plist is unchanged.
+    /// Runs on the actor so the dictionary needs no additional synchronization.
+    private func memoizedIconNames(for path: String, infoURL: URL) -> [String] {
+        let infoModification = (try? infoURL.resourceValues(forKeys: [.contentModificationDateKey]))
+            .flatMap(\.contentModificationDate)?.timeIntervalSince1970 ?? 0
+        if let entry = iconNameCache[path], entry.infoModification == infoModification {
+            return entry.iconNames
+        }
+        let iconNames = parseBundleIconNames(infoURL: infoURL)
+        iconNameCache[path] = (infoModification, iconNames)
+        return iconNames
     }
     
     // Prefer actual bitmap byte size; fall back to pixel dimensions (not point size).
@@ -107,7 +135,64 @@ actor IconCache {
     
     func clear() {
         cache.removeAllObjects()
+        iconNameCache.removeAll()
     }
+}
+
+/// Changes when the app bundle, its Info.plist, or its declared icon resource changes.
+/// This prevents a rescan from reusing an icon rasterized before an app update.
+/// - Parameter iconNames: Pre-resolved `CFBundleIconFile` / `CFBundleIconFiles` names.
+///   When `nil` (e.g. unit tests), the Info.plist is parsed directly.
+func appBundleIconFingerprint(path: String, iconNames: [String]? = nil) -> String {
+    let bundleURL = URL(fileURLWithPath: path, isDirectory: true)
+    let contentsURL = bundleURL.appendingPathComponent("Contents", isDirectory: true)
+    let infoURL = contentsURL.appendingPathComponent("Info.plist")
+    let resourcesURL = contentsURL.appendingPathComponent("Resources", isDirectory: true)
+
+    func metadata(for url: URL) -> String {
+        guard let values = try? url.resourceValues(forKeys: [
+            .fileResourceIdentifierKey,
+            .contentModificationDateKey,
+            .fileSizeKey
+        ]) else {
+            return "missing"
+        }
+        let identifier = values.fileResourceIdentifier.map(String.init(describing:)) ?? ""
+        let modificationDate = values.contentModificationDate?.timeIntervalSince1970 ?? 0
+        return "\(identifier):\(modificationDate):\(values.fileSize ?? 0)"
+    }
+
+    var urls = [bundleURL, infoURL]
+    let resolvedIconNames = iconNames ?? parseBundleIconNames(infoURL: infoURL)
+    var seenIconNames = Set<String>()
+    for iconName in resolvedIconNames where seenIconNames.insert(iconName).inserted {
+        var iconURL = resourcesURL.appendingPathComponent(iconName)
+        if iconURL.pathExtension.isEmpty {
+            iconURL.appendPathExtension("icns")
+        }
+        urls.append(iconURL)
+    }
+
+    return urls.map { "\($0.path)=\(metadata(for: $0))" }.joined(separator: "|")
+}
+
+/// Parses `CFBundleIconFile` / `CFBundleIconFiles` without any caching.
+/// IconCache memoizes this per bundle; direct callers accept the extra read.
+private func parseBundleIconNames(infoURL: URL) -> [String] {
+    var iconNames: [String] = []
+    if let data = try? Data(contentsOf: infoURL),
+       let propertyList = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+       let info = propertyList as? [String: Any] {
+        if let iconFile = info["CFBundleIconFile"] as? String {
+            iconNames.append(iconFile)
+        }
+        if let icons = info["CFBundleIcons"] as? [String: Any],
+           let primaryIcon = icons["CFBundlePrimaryIcon"] as? [String: Any],
+           let iconFiles = primaryIcon["CFBundleIconFiles"] as? [String] {
+            iconNames.append(contentsOf: iconFiles)
+        }
+    }
+    return iconNames
 }
 
 extension NSImage {

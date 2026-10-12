@@ -3,8 +3,9 @@ import XCTest
 /// UI tests require a running app instance. These tests validate
 /// basic window behavior, keyboard shortcuts, and folder interactions.
 ///
-/// NOTE: UI tests are excluded from `swift test` (see Package.swift).
-/// Run them via Xcode or `xcodebuild test` with a UI testing target.
+/// NOTE: UI tests are excluded from `swift test` (see Package.swift). This repository
+/// does not include an Xcode UI-testing target, so these tests require separate target
+/// configuration before they can be run.
 final class LaunchpadUITests: XCTestCase {
     var app: XCUIApplication!
     
@@ -35,21 +36,22 @@ final class LaunchpadUITests: XCTestCase {
     // MARK: - Toolbar Tests
     
     func testToolbarHasMinimumButtons() throws {
-        // Edit, New Folder, Refresh = at least 3 buttons
-        let buttons = app.buttons
-        XCTAssertTrue(buttons.count >= 3, "Should have at least 3 toolbar buttons (edit, folder, refresh)")
+        XCTAssertTrue(app.buttons["Toggle Edit Mode"].exists)
+        XCTAssertTrue(app.buttons["New Folder"].exists)
+        XCTAssertTrue(app.buttons["Refresh Apps"].exists)
     }
     
     func testSearchFieldExists() throws {
-        let searchField = app.textFields.firstMatch
+        let searchField = app.textFields["Search apps"]
         XCTAssertTrue(searchField.waitForExistence(timeout: 3), "Search field should exist")
     }
     
     // MARK: - Keyboard Tests
     
     func testEscapeKeyClearsSearch() throws {
-        let searchField = app.textFields.firstMatch
-        guard searchField.waitForExistence(timeout: 3) else { return }
+        let searchField = app.textFields["Search apps"]
+        XCTAssertTrue(searchField.waitForExistence(timeout: 3), "Search field should exist")
+        guard searchField.exists else { return }
         
         searchField.click()
         searchField.typeText("test")
@@ -62,8 +64,9 @@ final class LaunchpadUITests: XCTestCase {
     }
     
     func testCmdFFocusesSearch() throws {
-        let searchField = app.textFields.firstMatch
-        guard searchField.waitForExistence(timeout: 3) else { return }
+        let searchField = app.textFields["Search apps"]
+        XCTAssertTrue(searchField.waitForExistence(timeout: 3), "Search field should exist")
+        guard searchField.exists else { return }
         
         app.typeKey("f", modifierFlags: .command)
         
@@ -73,59 +76,56 @@ final class LaunchpadUITests: XCTestCase {
     // MARK: - Folder Tests
     
     func testCreateFolderViaToolbar() throws {
-        let folderButton = app.buttons.element(boundBy: 1)
-        guard folderButton.waitForExistence(timeout: 2) else { return }
-        
-        let initialButtonCount = app.buttons.count
+        let folderButton = app.buttons["New Folder"]
+        XCTAssertTrue(folderButton.waitForExistence(timeout: 2), "New Folder button should exist")
+        guard folderButton.exists else { return }
+
+        let emptyFolderPredicate = NSPredicate(format: "label CONTAINS ', 0 apps'")
+        let initialEmptyFolderCount = app.buttons.matching(emptyFolderPredicate).count
         folderButton.click()
-        
-        // After creating a folder, there should be a new folder element
-        // Give the UI time to update
-        sleep(1)
-        
-        // The button count should increase (folder grid item adds buttons)
-        XCTAssertGreaterThanOrEqual(app.buttons.count, initialButtonCount,
-                                     "Creating a folder should add UI elements")
+
+        let createdFolder = app.buttons.matching(emptyFolderPredicate).firstMatch
+        XCTAssertTrue(createdFolder.waitForExistence(timeout: 3), "Creating a folder should show an empty folder")
+        XCTAssertEqual(app.buttons.matching(emptyFolderPredicate).count, initialEmptyFolderCount + 1)
     }
     
     func testDismissFolderWithEscape() throws {
         // Create a folder first
-        let folderButton = app.buttons.element(boundBy: 1)
-        guard folderButton.waitForExistence(timeout: 2) else { return }
+        let folderButton = app.buttons["New Folder"]
+        XCTAssertTrue(folderButton.waitForExistence(timeout: 2), "New Folder button should exist")
+        guard folderButton.exists else { return }
         folderButton.click()
-        sleep(1)
-        
-        // Open the folder
-        // Look for folder elements (they have "folder" accessibility label)
-        let folder = app.buttons.matching(NSPredicate(format: "label CONTAINS 'apps'")).firstMatch
-        guard folder.waitForExistence(timeout: 2) else { return }
+
+        // Open the newly created empty folder
+        let folder = app.buttons.matching(NSPredicate(format: "label CONTAINS ', 0 apps'")).firstMatch
+        XCTAssertTrue(folder.waitForExistence(timeout: 3), "An empty folder should be visible")
+        guard folder.exists else { return }
         folder.click()
-        sleep(1)
         
         // Press ESC to dismiss
         app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
         sleep(1)
         
         // Close button should no longer exist after dismissal
-        let closeButton = app.buttons["Close"]
+        let closeButton = app.buttons["Close folder"]
         XCTAssertFalse(closeButton.exists, "ESC should dismiss folder modal")
     }
     
     func testCloseButtonDismissesFolder() throws {
         // Create and open a folder
-        let folderButton = app.buttons.element(boundBy: 1)
-        guard folderButton.waitForExistence(timeout: 2) else { return }
+        let folderButton = app.buttons["New Folder"]
+        XCTAssertTrue(folderButton.waitForExistence(timeout: 2), "New Folder button should exist")
+        guard folderButton.exists else { return }
         folderButton.click()
-        sleep(1)
-        
-        let folder = app.buttons.matching(NSPredicate(format: "label CONTAINS 'apps'")).firstMatch
-        guard folder.waitForExistence(timeout: 2) else { return }
+
+        let folder = app.buttons.matching(NSPredicate(format: "label CONTAINS ', 0 apps'")).firstMatch
+        XCTAssertTrue(folder.waitForExistence(timeout: 3), "An empty folder should be visible")
+        guard folder.exists else { return }
         folder.click()
-        sleep(1)
-        
-        // Click Close button
-        let closeButton = app.buttons["Close"]
-        guard closeButton.waitForExistence(timeout: 2) else { return }
+
+        let closeButton = app.buttons["Close folder"]
+        XCTAssertTrue(closeButton.waitForExistence(timeout: 2), "Close button should be available in the folder")
+        guard closeButton.exists else { return }
         closeButton.click()
         sleep(1)
         

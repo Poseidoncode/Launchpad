@@ -1,27 +1,24 @@
 #!/bin/bash
+set -euo pipefail
 
 # 基本測試 - 不需要輔助訪問權限
 
 echo "=== Launchpad 基本測試 ==="
 echo ""
 
-# 1. 清除數據
-echo "🧹 清除應用數據..."
-rm -rf ~/Library/Application\ Support/Launchpad
-
-# 2. 構建應用
+# 1. Preserve existing UserDefaults; this smoke test must not delete user data.
+# 2. Build the app once; build-app.sh performs the release build itself.
 echo "📦 構建應用..."
-swift build -c release 2>&1 | tail -5
-./build-app.sh 2>&1 | tail -5
+./build-app.sh
 
-# 3. 啟動應用
+# 3. Launch the app
 echo "🚀 啟動應用..."
 open build/Launchpad.app
 
 sleep 3
 
 # 4. 檢查應用是否運行
-if pgrep -f "Launchpad" > /dev/null; then
+if pgrep -x "Launchpad" > /dev/null; then
     echo "✅ PASS: 應用成功啟動"
 else
     echo "❌ FAIL: 應用未啟動"
@@ -31,7 +28,8 @@ fi
 # 5. 檢查應用 CPU 使用率
 echo ""
 echo "📊 檢查性能..."
-ps aux | grep -i "[L]aunchpad" | awk '{printf "CPU: %.1f%%, Memory: %.1fMB\n", $3, $4}'
+process_id="$(pgrep -x "Launchpad" | head -n 1)"
+ps -p "$process_id" -o pcpu=,rss= | awk '{printf "CPU: %.1f%%, Memory: %.1fMB\n", $1, $2 / 1024}'
 
 # 6. 等待用戶手動測試
 echo ""
@@ -60,7 +58,7 @@ echo ""
 read -p "測試完成後是否關閉應用？(y/n) " -n 1 -r
 echo ""
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    pkill -f "Launchpad"
+    pkill -x "Launchpad"
     echo "✓ 應用已關閉"
 fi
 

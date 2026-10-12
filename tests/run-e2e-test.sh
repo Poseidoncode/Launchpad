@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 # E2E 測試腳本 - 需要授權輔助訪問
 
@@ -23,9 +24,9 @@ fi
 echo "✓ 應用已找到"
 echo ""
 
-# 清除之前的應用數據
-echo "🧹 清除應用數據..."
-rm -rf ~/Library/Application\ Support/Launchpad
+# Do not remove Application Support data or UserDefaults. This test uses the
+# current preference domain and any changes made by the UI test will persist.
+echo "ℹ️  Existing preferences will be preserved; UI changes may persist."
 
 # 啟動應用
 echo "🚀 啟動應用..."
@@ -34,7 +35,7 @@ open build/Launchpad.app
 sleep 3
 
 # 檢查應用是否運行
-if pgrep -f "Launchpad" > /dev/null; then
+if pgrep -x "Launchpad" > /dev/null; then
     echo "✓ 應用正在運行"
 else
     echo "❌ 應用未啟動"
@@ -42,7 +43,7 @@ else
 fi
 
 echo ""
-echo "=== 自動測試（需要輔助訪問權限） ==="
+echo "=== AppleScript 輔助使用診斷（需要權限） ==="
 echo ""
 
 #嘗試運行 AppleScript
@@ -59,6 +60,6 @@ echo "測試完成後，請回報結果。"
 read -p "是否關閉應用？(y/n) " -n 1 -r
 echo ""
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    pkill -f "Launchpad"
+    pkill -x "Launchpad"
     echo "✓ 應用已關閉"
 fi

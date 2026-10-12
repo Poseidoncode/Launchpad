@@ -11,8 +11,8 @@ struct SettingsView: View {
                     Text("Icon Size")
                     Slider(
                         value: $store.preferences.iconSize.sending(\.setIconSize),
-                        in: 48...128,
-                        step: 8
+                        in: UserPreferences.iconSizeRange,
+                        step: 4
                     )
                     Text("\(Int(store.preferences.iconSize))pt")
                         .frame(width: 40, alignment: .trailing)
@@ -21,7 +21,7 @@ struct SettingsView: View {
                 Stepper(
                     "Columns: \(store.preferences.columns)",
                     value: $store.preferences.columns.sending(\.setColumns),
-                    in: 3...10
+                    in: UserPreferences.columnsRange
                 )
             }
             

@@ -13,27 +13,37 @@
 Launchpad is a native macOS app that scans system application directories (`/Applications`,
 `/System/Applications`, `/System/Applications/Utilities`, `~/Applications`) and displays them in a grid UI. It stores
 user preferences (folder layout, custom app names) in `UserDefaults` only — **no
-network access, no telemetry, no analytics**.
+network access, no telemetry, no analytics**. The app is not App Sandbox-enabled because its
+core workflows need to enumerate and manage app bundles outside its own container.
 
 ### Data Access
 
-- **Reads:** Application bundle metadata (name, icon, bundle ID) from standard system paths.
-  No user documents, contacts, browser data, or personal files are accessed.
-- **Writes:** Preferences only — stored locally in `UserDefaults` under the key
-  `LaunchpadUserPreferences`. A write-ahead staging key is also used for crash recovery.
+- **Reads:** The implemented scanner reads application bundle metadata (name, icon, bundle ID)
+  from standard application directories. It does not read user documents, contacts, browser data,
+  or personal files.
+- **Writes:** Preferences are stored locally in `UserDefaults` under the key
+  `LaunchpadUserPreferences`; a write-ahead staging key is used for crash recovery. The explicit
+  Move to Trash action moves only the app bundle the user selected, subject to normal macOS file
+  permissions and System Integrity Protection.
+- **Filesystem access:** The app runs with the current user's normal filesystem permissions rather
+  than an App Sandbox. This is required for app discovery and moving user-owned apps to Trash. A
+  compromised or malicious build could access other files the user can access; only install builds
+  you trust. The app's implemented workflows do not access those other files.
 - **Network:** None. The app never makes network requests.
 - **Cloud:** None. No iCloud, no sync, no remote storage.
 
-### Sandbox
+### App Sandbox and Code Signing
 
-Launchpad runs inside the macOS App Sandbox with these entitlements:
+The packaged app is intentionally **not** signed with the App Sandbox entitlement. Sandbox access
+would prevent reliable discovery of apps in `~/Applications` and block moving user-owned app bundles
+outside the app container to Trash. The app does not request administrator privileges or bypass POSIX
+permissions or System Integrity Protection, so some apps (especially those in `/Applications`) may
+still be impossible to move to Trash.
 
-- `com.apple.security.app-sandbox` — Sandbox enabled
-
-> **Note:** The Homebrew formula (`brew install`) builds without sandbox or codesigning
-> (it uses `--disable-sandbox` for SPM's build sandbox only, and does not apply codesign).
-> Sandboxing is only applied when using the curl installer (`build-app.sh`) which codesigns
-> with entitlements. Both installation paths produce functionally identical binaries.
+Both the curl installer and Homebrew formula call `build-app.sh`. The resulting app is ad-hoc signed,
+not Developer ID signed or notarized; macOS may show its normal warning for software distributed
+outside the App Store. The SwiftPM build sandbox is a build-time restriction and does not sandbox the
+resulting app at runtime.
 
 ### Dependencies
 
@@ -64,9 +74,9 @@ This is standard practice for developer tools (Homebrew, Rust, Deno all do the s
 The script:
 
 1. Clones the repository to a temporary directory via `git clone --depth 1` over HTTPS
-2. Builds from source using `swift build`
-3. Copies the resulting `.app` to `/Applications`
-4. Removes the temporary directory on exit
+2. Builds from source using `swift build` with SwiftPM's default build-time sandbox
+3. Stages the resulting `.app` in `~/Applications` by default (or `LAUNCHPAD_INSTALL_DIR`) and preserves the old copy if replacement fails
+4. Removes the temporary build directory on exit
 
 **You are trusting:**
 - The HTTPS/TLS certificate chain (GitHub uses strong TLS)

@@ -1,121 +1,99 @@
-# Bug 修復完成報告
+# Project Review and Verification
 
-## 修復內容
+This report records the current implementation and verification. Unit tests and packaging checks
+were run, but interactive GUI behavior still needs a manual macOS run.
 
-### Bug 1: 打開資料夾時卡頓
-**根本原因：** folderApps 的 compactMap 在每次視圖更新時都執行
+## Fixed in this review
 
-**修復：** 
-- 使用 appMap 進行 O(1) 查找（已存在）
-- compactMap 只在 sheet 打開時執行一次
+- Scanner cache results now carry immutable visibility, raster-size, force-refresh, and display-epoch
+  metadata. Waiters no longer inspect mutable metadata belonging to a later scan. Empty scan results
+  are cached too.
+- Screen-scale checks run before scan-cache reuse, and `IconCache` is synchronized before new icons
+  are requested. This closes the notification-order race that could leave stale-resolution icons in
+  the grid.
+- Global search now finds apps contained in folders and matches custom app names. Folder names are
+  also filtered into search results.
+- Startup normalization now removes duplicate app-order IDs, duplicate folder identities, and
+  duplicate/cross-folder app memberships, while preserving IDs omitted by a visibility-filtered scan
+  so hidden apps keep their saved positions and folder assignments. Normalization is persisted even
+  when the app order itself was already valid.
+- Folder drops end drag visuals, empty-grid drops clear the active-drag state, and creating a folder
+  clears a stale search that would otherwise hide it. Edit-mode removal indicators open the Trash
+  confirmation dialog; successful Trash operations run off the main thread and remove saved order and
+  folder membership.
+- Error-banner timer cancellation no longer dismisses a replacement error. Invalid/no-op folder
+  actions avoid unnecessary preference writes.
+- Preference fields decode independently, so one field with a malformed type does not discard valid
+  settings.
+- Installer replacement is staged with a backup/restore path and now defaults to the per-user
+  `~/Applications` directory, avoiding a guaranteed permission failure for non-root installs. The
+  destination can be overridden with `LAUNCHPAD_INSTALL_DIR`. Build/install scripts no longer delete
+  user data, the redundant release build was removed from the launch smoke test, and process checks
+  no longer match the test shell itself.
+- App bundle discovery now resolves `~/Applications` at scan time, reports enumeration failures,
+  and avoids caching partial results when a scan is cancelled.
+- Icon cache keys include app-bundle metadata (bundle/Info.plist/icon-resource fingerprint), with
+  Info.plist icon-name parsing memoized per bundle and invalidated by modification date. Memory-pressure
+  handling releases icons held by grid state; visible icons reload lazily via `AppIconView`, keyed by
+  app identity so reused cells never show a previous app's bitmap. Settings ranges now match the model's
+  accepted ranges.
+- The packaged app is intentionally not App Sandbox-enabled so it can discover user-installed apps
+  and move user-owned apps to Trash. This gives the app the current user's normal filesystem access;
+  `SECURITY.md` documents the trade-off.
+- Homebrew instructions now use the explicit repository URL. The formula is documented as
+  development-only until an immutable tagged release is published.
 
-**代碼位置：** `src/Features/AppGrid/AppGridView.swift:178-197`
+## Classic-Launchpad parity pass (10 items)
 
-### Bug 2: 點擊背景無法關閉 Modal
-**根本原因：** 
-- Color.clear 不接收點擊事件
-- VStack 的 background 可能阻止事件傳播
+- Folder modal closes on successful launch; the app also hides itself so the
+  launched app comes forward. Failed launches keep the modal open for retry.
+- New installs/uninstalls in the app directories are picked up automatically via
+  an O_EVTONLY directory observer (debounced) + silent rescan; no manual refresh.
+- Normal-mode drags onto apps are ignored (no more accidental reorders). Edit-mode
+  drops use the drop point: icon center merges into a folder, edges reorder
+  before/after (`moveAppBefore`).
+- Intra-folder drag reorder (`moveAppInFolderAfter/Before`); drag-out onto the
+  backdrop removes the app; folders can be reordered by dragging tiles in edit
+  mode (`moveFolderAfter/Before`). Empty folders auto-delete (also when trashing
+  empties one).
+- Edit-mode delete badge now shows only for Mac App Store apps (`_MASReceipt`
+  detection); context-menu Trash remains for all apps. Folders get their own
+  delete badge in edit mode.
+- Edit-mode entry: toolbar pencil button (replacing the cryptic sort arrows),
+  long-press on an icon, or holding Option; icons jiggle while editing.
+- Keyboard: arrows move a selection ring (row-aware via column count), Enter
+  launches the selection or first hit; arrows yield to the caret while searching.
+- Removed the static "Device" bottom label.
 
-**修復：**
-```swift
-// FolderDetailView.swift:514-632
-var body: some View {
-    GeometryReader { geometry in
-        ZStack {
-            // 背景層（可點擊）
-            Color.clear
-                .frame(width: geometry.size.width, height: geometry.size.height)
-                .contentShape(Rectangle())  // ← 關鍵修復
-                .onTapGesture { dismiss() }
-                .background(VisualEffectView(...))
-            
-            // 內容層
-            VStack(...) { ... }
-                .background(
-                    Rectangle()
-                        .fill(.ultraThickMaterial)
-                        .allowsHitTesting(false)  // ← 不阻止事件
-                )
-        }
-    }
-}
-```
+## Verification performed
 
----
+- `swift test`: **74 tests passed**, 0 failures.
+- `swift build -c release`: passed with no compiler warnings.
+- `./build-app.sh`: produced an app bundle; strict code-signature verification and Info.plist
+  validation passed. The signature has no App Sandbox entitlement. The app itself was not launched.
+- Installer replacement was exercised against a temporary `LAUNCHPAD_INSTALL_DIR` destination;
+  the new app installed successfully, strict signature verification passed, and no staging/backup
+  directories were left behind.
+- `bash -n` and `shellcheck`: passed for all shell scripts.
+- `ruby -c Formula/launchpad.rb`: passed.
+- `osacompile`: passed for `tests/e2e-test.applescript`.
 
-## 代碼邏輯檢查
+The unit suite currently emits benign TCA `XCTExpectFailure` diagnostics when tests cancel pending
+preference-save effects with `skipInFlightEffects`; the test suite still reports zero failures.
 
-### ✓ 檢查 1：contentShape 位置
-- contentShape 在 onTapGesture 之前 ✓
-- 覆蓋整個 Rectangle ✓
+## Remaining verification / performance considerations
 
-### ✓ 檢查 2：背景層順序
-- ZStack 中背景層在最底層 ✓
-- 內容層在背景層之上 ✓
-
-### ✓ 櫃 3：allowsHitTesting
-- VStack 背景使用 allowsHitTesting(false) ✓
-- 不阻止背景點擊事件 ✓
-
-### ✓ 檢查 4：構建成功
-- swift build -c release 成功 ✓
-- build-app.sh 成功 ✓
-- 應用可以啟動 ✓
-
----
-
-## 測試指引
-
-### 必須手動測試的原因：
-- SwiftUI 的點擊事件傳播機制複雜
-- 不同 macOS 版本可能有差異
-- GUI 交互無法通過腳本完全自動化
-
-### 測試步驟：
-
-#### 1. ESC 鍵測試
-```
-1. 創建 Folder（點擊 folder.badge.plus）
-2. 打開 Folder
-3. 按 ESC
-4. ✓ Modal 應該關閉
-```
-
-#### 2. 背景點擊測試
-```
-1. 打開 Folder
-2. 點擊深色背景區域（注意：不是內容區域）
-3. ✓ Modal 應詊關閉
-```
-
-#### 3. 性能測試
-```
-1. 打開包含多個 apps 的 Folder
-2. 觀察是否卡頓
-3. ✓ 应該快速響應（< 1秒）
-```
-
----
-
-## 如果測試失敗
-
-### 背景點擊失敗的可能原因：
-1. contentShape 沒有覆蓋到背景區域
-2. macOS sheet 的特殊處理
-3. 需要使用 fullScreenCover 而非 sheet
-
-### 性能失敗的可能原因：
-1. LazyVGrid 渲染問題
-2. 圖標加載問題
-3. 需要預加載圖標
-
----
-
-## 下一步
-
-請手動測試後回報：
-- ✓ 通過 / ✗ 失敗
-- 失敗原因描述
-- 截圖（如果可能）
-
-我會根據測試結果調整。
+- The GUI smoke test and folder-background dismissal were not run in this session because they require
+  an interactive desktop and, for the AppleScript helper, Accessibility permission.
+- The repository has no Xcode UI-testing target/project, and `LaunchpadUITests.swift` is excluded from
+  `swift test`; those tests are currently not part of automated verification.
+- App discovery still rasterizes icons for every discovered app during a scan before the initial grid
+  appears. The scan is bounded to eight concurrent app tasks and cached in-process, so a very large
+  app collection can still increase initial scan time. Under memory pressure, the grid now drops those
+  strong references (`memoryPressureReceived`) and `AppIconView` reloads icons lazily as cells become
+  visible; `NSCache`'s 100 MB cost limit still does not bound `NSImage`s strongly held by the
+  scanner/store between pressure events. A fully lazy visible-only scan remains future work.
+- Move to Trash works subject to normal POSIX permissions and System Integrity Protection; protected
+  apps may still need to be moved with Finder or an administrator-authorized workflow.
+- The repository has no tagged immutable Homebrew release yet. The formula tracks `main` and should
+  only be presented as a development/HEAD install until a release archive and checksum are published.

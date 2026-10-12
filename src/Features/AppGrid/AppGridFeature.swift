@@ -15,6 +15,8 @@ struct AppGridFeature {
         var searchQuery: String = ""
         var openFolderID: UUID? = nil
         var errorMessage: String? = nil
+        /// Keyboard-driven selection for arrow-key navigation (never persisted).
+        var keyboardSelectedID: UUID? = nil
         var preferences: UserPreferences = .default
         
         private(set) var displayedApps: [AppItem] = []
@@ -22,15 +24,14 @@ struct AppGridFeature {
         private(set) var appMap: [UUID: AppItem] = [:]
         
         mutating func updateDisplayedApps() {
-            // Locale-aware match without allocating a lowercased copy of every
-            // name on each keystroke (same predicate FolderDetailView uses).
-            let filtered = searchQuery.isEmpty ? apps : apps.filter {
-                $0.name.localizedCaseInsensitiveContains(searchQuery)
+            // Locale-aware matching avoids allocating lowercased copies on each keystroke.
+            let filtered = searchQuery.isEmpty ? apps : apps.filter { app in
+                let displayName = preferences.customAppNames[app.bundleIdentifier] ?? app.name
+                return displayName.localizedCaseInsensitiveContains(searchQuery)
             }
-            
-            // hide apps that are inside folders
-            let folderAppIDs = Set(folders.flatMap(\.appIDs))
-            
+            // Keep apps inside folders hidden in the normal grid, but include them
+            // in search results so users can find apps without opening each folder.
+            let folderAppIDs = searchQuery.isEmpty ? Set(folders.flatMap(\.appIDs)) : []
             var result = filtered.filter { !folderAppIDs.contains($0.id) }
             // Skip copying the whole array when no custom names exist (common).
             if !preferences.customAppNames.isEmpty {
@@ -47,11 +48,21 @@ struct AppGridFeature {
         }
         
         mutating func rebuildOrderIndexMap() {
-            orderIndexMap = Dictionary(uniqueKeysWithValues: appOrder.enumerated().map { ($0.element, $0.offset) })
+            // Preferences can be hand-edited or left by older versions; tolerate
+            // duplicate IDs rather than trapping in Dictionary(uniqueKeysWithValues:).
+            var indices: [UUID: Int] = [:]
+            for (index, id) in appOrder.enumerated() where indices[id] == nil {
+                indices[id] = index
+            }
+            orderIndexMap = indices
         }
         
         mutating func rebuildAppMap() {
-            appMap = Dictionary(uniqueKeysWithValues: apps.map { ($0.id, $0) })
+            var map: [UUID: AppItem] = [:]
+            for app in apps where map[app.id] == nil {
+                map[app.id] = app
+            }
+            appMap = map
         }
     }
     
@@ -64,9 +75,18 @@ struct AppGridFeature {
         case appsLoaded([AppItem], clearsLoading: Bool = true)
         case launchApp(AppItem)
         case launchResult(Bool, String)
+        case trashApp(AppItem)
+        case appWasTrashed(UUID)
         case toggleEditMode
+        case setEditMode(Bool)
         case swapApps(id: UUID, with: UUID)
         case moveApp(id: UUID, after: UUID)
+        case moveAppBefore(id: UUID, before: UUID)
+        case moveFolderAfter(id: UUID, after: UUID)
+        case moveFolderBefore(id: UUID, before: UUID)
+        case moveAppInFolderAfter(id: UUID, after: UUID, folderID: UUID)
+        case moveAppInFolderBefore(id: UUID, before: UUID, folderID: UUID)
+        case setKeyboardSelectedID(UUID?)
         case setSearchQuery(String)
         case openFolder(UUID)
         case closeFolder
@@ -81,7 +101,9 @@ struct AppGridFeature {
         case savePreferences
         case flushPendingSave
         case reloadApps
+        case externalAppsChanged
         case refreshIconsAfterScreenChange
+        case memoryPressureReceived
         case iconRescanDebounceFired
     }
     
@@ -110,43 +132,124 @@ struct AppGridFeature {
                     state.isLoading = false
                 }
                 state.apps = apps
+                state.keyboardSelectedID = nil
                 state.rebuildAppMap()
                 
-                let currentIDs = Set(apps.map(\.id))
-                let orderedExistingIDs = state.appOrder.filter { currentIDs.contains($0) }
-                let missingIDs = apps.map(\.id).filter { !orderedExistingIDs.contains($0) }
+                var orderedIDs = Set<UUID>()
+                // Keep IDs not seen in this scan: hidden apps (and temporarily
+                // inaccessible apps) must not lose their saved order when omitted.
+                let orderedExistingIDs = state.appOrder.filter { orderedIDs.insert($0).inserted }
+                let missingIDs = apps.map(\.id).filter { orderedIDs.insert($0).inserted }
                 let normalizedOrder = orderedExistingIDs + missingIDs
                 
-                // Clean up stale app IDs from folders
+                // Keep unavailable folder members for the same reason. Remove only
+                // duplicate folder identities and duplicate app memberships.
+                var foldersChanged = false
+                var seenFolderIDs = Set<UUID>()
+                let uniqueFolders = state.folders.filter { seenFolderIDs.insert($0.id).inserted }
+                if uniqueFolders.count != state.folders.count {
+                    state.folders = uniqueFolders
+                    foldersChanged = true
+                }
+                var assignedAppIDs = Set<UUID>()
                 for idx in state.folders.indices {
-                    state.folders[idx].appIDs = state.folders[idx].appIDs.filter { currentIDs.contains($0) }
+                    let normalizedIDs = state.folders[idx].appIDs.filter {
+                        assignedAppIDs.insert($0).inserted
+                    }
+                    if normalizedIDs != state.folders[idx].appIDs {
+                        state.folders[idx].appIDs = normalizedIDs
+                        foldersChanged = true
+                    }
                 }
                 
-                if normalizedOrder != state.appOrder {
+                let orderChanged = normalizedOrder != state.appOrder
+                if orderChanged {
                     state.appOrder = normalizedOrder
                     state.rebuildOrderIndexMap()
-                    state.updateDisplayedApps()
-                    return .send(.savePreferences)
                 }
-                
                 state.updateDisplayedApps()
-                return .none
+                return orderChanged || foldersChanged ? .send(.savePreferences) : .none
                 
             case let .launchApp(app):
                 return .run { send in
                     let success = NSWorkspace.shared.open(app.path)
+                    if success {
+                        // Classic Launchpad dismisses itself on launch so the
+                        // launched app comes forward instead of hiding behind us.
+                        await MainActor.run { NSApplication.shared.hide(nil) }
+                    }
                     await send(.launchResult(success, app.name))
                 }
                 
             case let .launchResult(success, appName):
                 if !success {
-                    Logger.appGrid.error("Failed to launch: \(appName, privacy: .public)")
+                    Logger.appGrid.error("Failed to launch: \(appName, privacy: .private)")
                     return .send(.setErrorMessage("Could not launch \(appName)"))
                 }
+                // Dismiss the folder modal so the just-launched app isn't hidden
+                // behind it. No-op when launching from the main grid; kept open
+                // on failure so the user can retry and still see the context.
+                state.openFolderID = nil
                 return .none
+
+            case let .trashApp(app):
+                let appName = app.name
+                let appPath = app.path
+                let appID = app.id
+                return .run { send in
+                    do {
+                        try await Task.detached(priority: .userInitiated) {
+                            try FileManager.default.trashItem(at: appPath, resultingItemURL: nil)
+                        }.value
+                        await send(.appWasTrashed(appID))
+                        await send(.reloadApps)
+                    } catch {
+                        Logger.appGrid.error("Trash failed for \(appPath.path, privacy: .private): \(error.localizedDescription, privacy: .private)")
+                        await send(.setErrorMessage("Could not move \"\(appName)\" to Trash. Try Finder or check file permissions."))
+                    }
+                }
+
+            case let .appWasTrashed(appID):
+                let hadApp = state.apps.contains { $0.id == appID }
+                let orderCount = state.appOrder.count
+                state.apps.removeAll { $0.id == appID }
+                state.appOrder.removeAll { $0 == appID }
+                var foldersChanged = false
+                for idx in state.folders.indices {
+                    let originalIDs = state.folders[idx].appIDs
+                    state.folders[idx].appIDs.removeAll { $0 == appID }
+                    foldersChanged = foldersChanged || originalIDs != state.folders[idx].appIDs
+                }
+                // Drop folders emptied by the trash, mirroring removeAppFromFolder.
+                let nonEmptyFolders = state.folders.filter { !$0.appIDs.isEmpty }
+                if nonEmptyFolders.count != state.folders.count {
+                    if let openID = state.openFolderID,
+                       state.folders.contains(where: { $0.id == openID && $0.appIDs.isEmpty }) {
+                        state.openFolderID = nil
+                    }
+                    state.folders = nonEmptyFolders
+                    foldersChanged = true
+                }
+                guard hadApp || orderCount != state.appOrder.count || foldersChanged else { return .none }
+                state.rebuildAppMap()
+                state.rebuildOrderIndexMap()
+                state.updateDisplayedApps()
+                return .send(.savePreferences)
                 
             case .toggleEditMode:
                 state.isEditMode.toggle()
+                return .none
+
+            case let .setEditMode(edit):
+                // Idempotent set for Option-hold / long-press entry, which fire
+                // on transitions rather than discrete taps. No-op when unchanged
+                // so holding the key doesn't spam preference saves.
+                guard state.isEditMode != edit else { return .none }
+                state.isEditMode = edit
+                return .none
+
+            case let .setKeyboardSelectedID(id):
+                state.keyboardSelectedID = id
                 return .none
                 
             case let .swapApps(id, withID):
@@ -184,62 +287,174 @@ struct AppGridFeature {
                 state.rebuildOrderIndexMap()
                 state.updateDisplayedApps()
                 return .send(.savePreferences)
+
+            case let .moveAppBefore(id, before: targetID):
+                // Edge-drop counterpart to moveApp(after:): dropping on an
+                // icon's leading edge inserts before it (classic reorder).
+                guard let fromIndex = state.orderIndexMap[id],
+                      let toIndex = state.orderIndexMap[targetID],
+                      id != targetID else {
+                    return .none
+                }
+
+                var updatedOrder = state.appOrder
+                updatedOrder.remove(at: fromIndex)
+                let adjustedTarget = (fromIndex < toIndex) ? toIndex - 1 : toIndex
+                updatedOrder.insert(id, at: adjustedTarget)
+
+                if updatedOrder == state.appOrder {
+                    return .none
+                }
+
+                state.appOrder = updatedOrder
+                state.rebuildOrderIndexMap()
+                state.updateDisplayedApps()
+                return .send(.savePreferences)
+
+            case let .moveFolderAfter(id, after: targetID):
+                guard id != targetID,
+                      let from = state.folders.firstIndex(where: { $0.id == id }),
+                      let to = state.folders.firstIndex(where: { $0.id == targetID }) else {
+                    return .none
+                }
+                var folders = state.folders
+                let moving = folders.remove(at: from)
+                let adjustedTarget = (from < to) ? to - 1 : to
+                folders.insert(moving, at: adjustedTarget + 1)
+                guard folders.map(\.id) != state.folders.map(\.id) else { return .none }
+                state.folders = folders
+                state.updateDisplayedApps()
+                return .send(.savePreferences)
+
+            case let .moveFolderBefore(id, before: targetID):
+                guard id != targetID,
+                      let from = state.folders.firstIndex(where: { $0.id == id }),
+                      let to = state.folders.firstIndex(where: { $0.id == targetID }) else {
+                    return .none
+                }
+                var folders = state.folders
+                let moving = folders.remove(at: from)
+                let adjustedTarget = (from < to) ? to - 1 : to
+                folders.insert(moving, at: adjustedTarget)
+                guard folders.map(\.id) != state.folders.map(\.id) else { return .none }
+                state.folders = folders
+                state.updateDisplayedApps()
+                return .send(.savePreferences)
+
+            case let .moveAppInFolderAfter(id, after: targetID, folderID):
+                guard let idx = state.folders.firstIndex(where: { $0.id == folderID }),
+                      id != targetID,
+                      let from = state.folders[idx].appIDs.firstIndex(of: id),
+                      let to = state.folders[idx].appIDs.firstIndex(of: targetID) else {
+                    return .none
+                }
+                var appIDs = state.folders[idx].appIDs
+                appIDs.remove(at: from)
+                let adjustedTarget = (from < to) ? to - 1 : to
+                appIDs.insert(id, at: adjustedTarget + 1)
+                guard appIDs != state.folders[idx].appIDs else { return .none }
+                state.folders[idx].appIDs = appIDs
+                state.updateDisplayedApps()
+                return .send(.savePreferences)
+
+            case let .moveAppInFolderBefore(id, before: targetID, folderID):
+                guard let idx = state.folders.firstIndex(where: { $0.id == folderID }),
+                      id != targetID,
+                      let from = state.folders[idx].appIDs.firstIndex(of: id),
+                      let to = state.folders[idx].appIDs.firstIndex(of: targetID) else {
+                    return .none
+                }
+                var appIDs = state.folders[idx].appIDs
+                appIDs.remove(at: from)
+                let adjustedTarget = (from < to) ? to - 1 : to
+                appIDs.insert(id, at: adjustedTarget)
+                guard appIDs != state.folders[idx].appIDs else { return .none }
+                state.folders[idx].appIDs = appIDs
+                state.updateDisplayedApps()
+                return .send(.savePreferences)
                 
             case let .setSearchQuery(query):
                 state.searchQuery = query
+                state.keyboardSelectedID = nil
                 state.updateDisplayedApps()
                 return .none
                 
             case let .openFolder(id):
+                guard state.folders.contains(where: { $0.id == id }) else { return .none }
                 if state.appMap.isEmpty && !state.apps.isEmpty {
                     state.rebuildAppMap()
                 }
                 state.openFolderID = id
+                state.keyboardSelectedID = nil
                 return .none
-                
+
             case .closeFolder:
                 state.openFolderID = nil
+                state.keyboardSelectedID = nil
                 return .none
                 
             case let .createFolder(name, appIDs):
-                // auto-uniquify "New Folder" so multiple creates don't collide
+                let baseName = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(256))
+                guard !baseName.isEmpty else { return .none }
+
+                // Only retain valid, unique app IDs and make folder membership exclusive.
+                let availableIDs = Set(state.apps.map(\.id))
+                var seenIDs = Set<UUID>()
+                let validAppIDs = appIDs.filter {
+                    availableIDs.contains($0) && seenIDs.insert($0).inserted
+                }
+                for idx in state.folders.indices {
+                    state.folders[idx].appIDs.removeAll { seenIDs.contains($0) }
+                }
+
+                // Auto-uniquify names so repeated folder creation cannot collide.
                 let finalName: String
-                if state.folders.contains(where: { $0.name == name }) {
+                if state.folders.contains(where: { $0.name == baseName }) {
                     var counter = 2
-                    var candidate = "\(name) \(counter)"
+                    var candidate = "\(baseName) \(counter)"
                     while state.folders.contains(where: { $0.name == candidate }) {
                         counter += 1
-                        candidate = "\(name) \(counter)"
+                        candidate = "\(baseName) \(counter)"
                     }
                     finalName = candidate
                 } else {
-                    finalName = name
+                    finalName = baseName
                 }
-                let folder = Folder(name: finalName, appIDs: appIDs)
-                state.folders.append(folder)
+                state.folders.append(Folder(name: finalName, appIDs: validAppIDs))
+                // Keep the newly created folder visible even when a previous search
+                // query would otherwise filter it out.
+                state.searchQuery = ""
                 state.updateDisplayedApps()
                 return .send(.savePreferences)
                 
             case let .renameFolder(id, name):
-                guard !name.trimmingCharacters(in: .whitespaces).isEmpty else { return .none }
-                if let idx = state.folders.firstIndex(where: { $0.id == id }) {
-                    let trimmed = String(name.trimmingCharacters(in: .whitespaces).prefix(256))
-                    if state.folders.contains(where: { $0.name == trimmed && $0.id != id }) {
-                        var counter = 2
-                        var candidate = "\(trimmed) \(counter)"
-                        while state.folders.contains(where: { $0.name == candidate && $0.id != id }) {
-                            counter += 1
-                            candidate = "\(trimmed) \(counter)"
-                        }
-                        state.folders[idx].name = candidate
-                    } else {
-                        state.folders[idx].name = trimmed
-                    }
+                let trimmed = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(256))
+                guard !trimmed.isEmpty,
+                      let idx = state.folders.firstIndex(where: { $0.id == id }) else {
+                    return .none
                 }
+
+                let finalName: String
+                if state.folders.contains(where: { $0.name == trimmed && $0.id != id }) {
+                    var counter = 2
+                    var candidate = "\(trimmed) \(counter)"
+                    while state.folders.contains(where: { $0.name == candidate && $0.id != id }) {
+                        counter += 1
+                        candidate = "\(trimmed) \(counter)"
+                    }
+                    finalName = candidate
+                } else {
+                    finalName = trimmed
+                }
+                guard state.folders[idx].name != finalName else { return .none }
+                state.folders[idx].name = finalName
+                state.updateDisplayedApps()
                 return .send(.savePreferences)
                 
             case let .deleteFolder(id):
+                let originalCount = state.folders.count
                 state.folders.removeAll { $0.id == id }
+                guard state.folders.count != originalCount else { return .none }
                 state.updateDisplayedApps()
                 if state.openFolderID == id {
                     state.openFolderID = nil
@@ -247,24 +462,48 @@ struct AppGridFeature {
                 return .send(.savePreferences)
                 
             case let .addAppToFolder(appID, folderID):
-                if let idx = state.folders.firstIndex(where: { $0.id == folderID }) {
-                    if !state.folders[idx].appIDs.contains(appID) {
-                        state.folders[idx].appIDs.append(appID)
+                guard state.apps.contains(where: { $0.id == appID }),
+                      let targetIndex = state.folders.firstIndex(where: { $0.id == folderID }) else {
+                    return .none
+                }
+
+                var changed = false
+                for idx in state.folders.indices where idx != targetIndex {
+                    let originalIDs = state.folders[idx].appIDs
+                    state.folders[idx].appIDs.removeAll { $0 == appID }
+                    changed = changed || originalIDs != state.folders[idx].appIDs
+                }
+                if !state.folders[targetIndex].appIDs.contains(appID) {
+                    state.folders[targetIndex].appIDs.append(appID)
+                    changed = true
+                }
+                guard changed else { return .none }
+                state.updateDisplayedApps()
+                return .send(.savePreferences)
+                
+            case let .removeAppFromFolder(appID, folderID):
+                guard let idx = state.folders.firstIndex(where: { $0.id == folderID }) else {
+                    return .none
+                }
+                let originalIDs = state.folders[idx].appIDs
+                state.folders[idx].appIDs.removeAll { $0 == appID }
+                guard originalIDs != state.folders[idx].appIDs else { return .none }
+                // Classic Launchpad drops a folder once its last app leaves;
+                // lingering empty folders would otherwise accumulate.
+                if state.folders[idx].appIDs.isEmpty {
+                    state.folders.remove(at: idx)
+                    if state.openFolderID == folderID {
+                        state.openFolderID = nil
                     }
                 }
                 state.updateDisplayedApps()
                 return .send(.savePreferences)
                 
-            case let .removeAppFromFolder(appID, folderID):
-                if let idx = state.folders.firstIndex(where: { $0.id == folderID }) {
-                    state.folders[idx].appIDs.removeAll { $0 == appID }
-                }
-                state.updateDisplayedApps()
-                return .send(.savePreferences)
-                
             case let .renameApp(bundleIdentifier, newName):
-                guard !newName.trimmingCharacters(in: .whitespaces).isEmpty else { return .none }
-                state.preferences.customAppNames[bundleIdentifier] = String(newName.prefix(256))
+                guard !newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .none }
+                let customName = String(newName.prefix(256))
+                guard state.preferences.customAppNames[bundleIdentifier] != customName else { return .none }
+                state.preferences.customAppNames[bundleIdentifier] = customName
                 state.updateDisplayedApps()
                 return .send(.savePreferences)
                 
@@ -314,6 +553,23 @@ struct AppGridFeature {
                     .cancel(id: "icon-rescan")
                 )
                 
+            case .externalAppsChanged:
+                // Fired by the /Applications directory observer (Fix 1): a silent
+                // background rescan. The observer already invalidated the scan
+                // cache, so this re-enumerates without forcing icon re-rasterize.
+                // Must not clear a concurrent reload's spinner (clearsLoading: false).
+                state.keyboardSelectedID = nil
+                return .run { [
+                    showHidden = state.preferences.showHiddenApps,
+                    iconSize = state.preferences.iconSize
+                ] send in
+                    let apps = await AppScanner.shared.scanApps(
+                        showHidden: showHidden,
+                        iconSize: iconSize
+                    )
+                    await send(.appsLoaded(apps, clearsLoading: false))
+                }
+
             case .reloadApps:
                 state.isLoading = true
                 return .run { [
@@ -343,6 +599,15 @@ struct AppGridFeature {
                     await send(.appsLoaded(apps, clearsLoading: false))
                 }
                 
+            case .memoryPressureReceived:
+                guard state.apps.contains(where: { $0.icon != nil }) else { return .none }
+                for index in state.apps.indices {
+                    state.apps[index].icon = nil
+                }
+                state.rebuildAppMap()
+                state.updateDisplayedApps()
+                return .none
+
             case .iconRescanDebounceFired:
                 // Fired by RootFeature's debounced icon-size rescan. Reads state
                 // fresh here (not captured across the debounce window) so a

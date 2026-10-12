@@ -3,7 +3,10 @@
 # Launchpad Build Script
 # 建立可執行的 macOS .app 應用程式
 
-set -e
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
 APP_NAME="Launchpad"
 VERSION="1.0.0"
@@ -14,7 +17,7 @@ echo "🚀 Building ${APP_NAME}..."
 
 # 編譯 release 版本
 echo "📦 Compiling release build..."
-swift build -c release --disable-sandbox
+swift build -c release
 
 # 創建 .app 結構
 echo "📁 Creating app bundle structure..."
@@ -67,8 +70,12 @@ echo "📝 Creating PkgInfo..."
 echo -n "APPL????" > "${APP_DIR}/Contents/PkgInfo"
 
 # 使用專案提供的 PNG 建立 macOS 應用程式圖示
-if command -v python3 &>/dev/null && command -v sips &>/dev/null && command -v iconutil &>/dev/null; then
-    echo "🎨 Creating app icon..."
+rm -f "${APP_DIR}/Contents/Resources/AppIcon.icns"
+if ! command -v python3 &>/dev/null || ! command -v sips &>/dev/null || ! command -v iconutil &>/dev/null; then
+    echo "❌ App icon generation requires python3, sips, and iconutil" >&2
+    exit 1
+fi
+echo "🎨 Creating app icon..."
 python3 << 'PYTHON_SCRIPT'
 import os
 import subprocess
@@ -133,43 +140,19 @@ if result.returncode != 0:
 # 清理
 shutil.rmtree(iconset_dir, ignore_errors=True)
 PYTHON_SCRIPT
-else
-    echo "⚠️  Skipping icon generation (requires python3, sips, iconutil)"
-fi
-
-# 生成 Sandbox Entitlements
-# #6 FIX: Removed com.apple.security.files.user-selected.read-only —
-# the app only reads from system directories (/Applications, etc.) which
-# are readable by all sandboxed apps without this entitlement.
-# No NSOpenPanel or file picker is used.
-# Entitlements are stored outside the app bundle (embedded in code signature).
-echo "🔐 Creating entitlements..."
-cat > "${APP_DIR}.entitlements" << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>com.apple.security.app-sandbox</key>
-    <true/>
-</dict>
-</plist>
-EOF
 
 # 設定權限
 echo "🔐 Setting permissions..."
 chmod +x "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 
-# 簽署（ad-hoc，含 entitlements）
-# Removed --deep (deprecated since macOS 13). The app has no nested code.
-# Fail hard on codesign failure — an unsigned app is worse than no app.
+# App management requires normal per-user filesystem access outside the app bundle.
+# This app is intentionally not sandboxed; see SECURITY.md for the resulting access scope.
+# Fail hard on code-signing failure — an unsigned app is worse than no app.
 echo "🔐 Code signing..."
-if ! codesign --force --sign - --entitlements "${APP_DIR}.entitlements" "${APP_DIR}" 2>&1; then
+if ! codesign --force --sign - "${APP_DIR}" 2>&1; then
     echo "❌ Code signing failed — app will not pass Gatekeeper" >&2
     exit 1
 fi
-
-# Clean up entitlements file (embedded in signature, no need to ship)
-rm -f "${APP_DIR}.entitlements"
 
 # 完成
 echo ""
@@ -180,6 +163,6 @@ echo ""
 echo "🚀 To run:"
 echo "   open ${APP_DIR}"
 echo ""
-echo "📦 To install to Applications:"
-echo "   cp -r ${APP_DIR} /Applications/"
+echo "📦 To install safely for this user:"
+echo "   ./install.sh  # installs to ~/Applications; set LAUNCHPAD_INSTALL_DIR to override"
 echo ""

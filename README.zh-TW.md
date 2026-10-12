@@ -14,14 +14,16 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/Poseidoncode/Launchpad/main/install.sh)
 ```
 
-需要 macOS 14+ 和 Xcode 15+。自動下載、編譯並安裝到 `/Applications`，用完即清。
+需要 macOS 14+ 和 Xcode 15+。自動下載、編譯並安裝到 `~/Applications`，不需要管理員權限。可用 `LAUNCHPAD_INSTALL_DIR` 自訂安裝路徑。
 
 ### Homebrew
 
+此開發版 formula 會追蹤 `main` 分支；正式標記版本發布前，請以 HEAD 模式安裝。
+
 ```bash
-brew tap Poseidoncode/Launchpad
-brew install --HEAD launchpad
-cp -r $(brew --prefix)/opt/launchpad/Launchpad.app /Applications/
+brew tap Poseidoncode/Launchpad https://github.com/Poseidoncode/Launchpad.git
+brew install --HEAD Poseidoncode/Launchpad/launchpad
+open "$(brew --prefix)/opt/launchpad/Launchpad.app"
 ```
 
 ### 開發

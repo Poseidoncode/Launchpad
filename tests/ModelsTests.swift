@@ -124,7 +124,7 @@ final class UserPreferencesTests: XCTestCase {
     }
 
     func testDecodeFallsBackOnMissingFields() throws {
-        // JSON missing some fields — decodeIfPresent should use defaults
+        // JSON missing some fields — decoding should use each field's default.
         let json = """
         {"appOrder":[],"folders":[]}
         """.data(using: .utf8)!
@@ -133,6 +133,18 @@ final class UserPreferencesTests: XCTestCase {
         XCTAssertEqual(decoded.columns, 7, "Missing columns should fall back to default")
         XCTAssertFalse(decoded.showHiddenApps, "Missing showHiddenApps should default to false")
         XCTAssertTrue(decoded.customAppNames.isEmpty, "Missing customAppNames should default to empty")
+    }
+
+    func testDecodeKeepsValidFieldsWhenAnotherFieldHasWrongType() throws {
+        let json = """
+        {"appOrder":[],"folders":[],"showHiddenApps":true,"iconSize":"large","columns":5,"customAppNames":{"com.test.app":"Custom"}}
+        """.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(UserPreferences.self, from: json)
+        XCTAssertTrue(decoded.showHiddenApps)
+        XCTAssertEqual(decoded.iconSize, 60)
+        XCTAssertEqual(decoded.columns, 5)
+        XCTAssertEqual(decoded.customAppNames["com.test.app"], "Custom")
     }
     
     func testIconRasterPointSizeIncludesHover() {

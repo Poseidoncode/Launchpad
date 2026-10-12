@@ -3,6 +3,7 @@ import SwiftUI
 struct ToolbarButton: View {
     let icon: String
     var isActive: Bool = false
+    var accessibilityLabel: String? = nil
     let action: () -> Void
     
     @State private var isHovered = false
@@ -16,6 +17,7 @@ struct ToolbarButton: View {
                 .background(isActive ? Color.accentColor.opacity(0.2) : (isHovered ? Color.white.opacity(0.15) : .clear), in: RoundedRectangle(cornerRadius: 7))
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel ?? icon)
         .onHover { isHovered = $0 }
         .animation(.easeInOut(duration: 0.15), value: isHovered)
     }

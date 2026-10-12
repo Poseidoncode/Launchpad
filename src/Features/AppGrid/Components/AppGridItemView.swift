@@ -2,7 +2,6 @@ import SwiftUI
 import ComposableArchitecture
 import AppKit
 import UniformTypeIdentifiers
-import OSLog
 
 struct AppGridItem: View {
     let app: AppItem
@@ -30,39 +29,41 @@ struct AppGridItem: View {
                         .frame(width: iconSize + 6, height: iconSize + 6)
                 }
 
-                Group {
-                    if let icon = app.icon {
-                        Image(nsImage: icon)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                    } else {
-                        Image(systemName: "app.fill")
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .foregroundStyle(.white.opacity(0.4))
-                    }
-                }
-                .frame(width: iconSize, height: iconSize)
+                AppIconView(
+                    app: app,
+                    size: iconSize,
+                    rasterPointSize: CGFloat(UserPreferences.iconRasterPointSize(Double(iconSize)))
+                )
                 .shadow(color: .black.opacity(0.35), radius: isHovered ? 10 : 4, y: isHovered ? 5 : 2)
                 .scaleEffect(isHovered ? CGFloat(UserPreferences.iconHoverScale) : 1.0)
                 .animation(.spring(response: 0.25, dampingFraction: 0.6), value: isHovered)
                 .opacity(isDraggingLocal ? 0.4 : 1.0)
+                .jiggling(active: isEditMode)
 
-                // Edit mode indicator
-                if isEditMode {
+                // Edit-mode delete badge — App Store apps only, matching classic
+                // Launchpad (which never offered deletion for other apps). All
+                // apps keep "Move to Trash" in the context menu.
+                if isEditMode && app.isAppStoreApp {
                     VStack {
                         HStack {
                             Spacer()
-                            Image(systemName: "minus.circle.fill")
-                                .foregroundStyle(.red)
-                                .font(.system(size: 16))
-                                .background(Circle().fill(.white))
+                            Button {
+                                showTrashConfirmation = true
+                            } label: {
+                                Image(systemName: "minus.circle.fill")
+                                    .foregroundStyle(.red)
+                                    .font(.system(size: 16))
+                                    .background(Circle().fill(.white))
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Move \(app.name) to Trash")
                         }
                         Spacer()
                     }
                     .frame(width: iconSize, height: iconSize)
                 }
             }
+            .keyboardSelected(store.keyboardSelectedID == app.id)
 
             Text(app.name)
                 .font(.system(size: 11))
@@ -75,11 +76,18 @@ struct AppGridItem: View {
         .contentShape(Rectangle())
         .accessibilityLabel(app.name)
         .accessibilityAddTraits(.isButton)
-        .accessibilityHint("Double-click to launch")
+        .accessibilityHint("Click to launch")
         .onHover { isHovered = $0 }
         .onTapGesture {
             if !isEditMode {
                 store.send(.launchApp(app))
+            }
+        }
+        // Classic edit-mode entry: long-press an icon (toolbar toggle kept
+        // as a discoverable alternative).
+        .onLongPressGesture(minimumDuration: 0.6) {
+            if !isEditMode {
+                store.send(.setEditMode(true))
             }
         }
         .contextMenu {
@@ -104,11 +112,11 @@ struct AppGridItem: View {
             return NSItemProvider(object: app.id.uuidString as NSString)
         } preview: {
             VStack(spacing: 4) {
-                if let icon = app.icon {
-                    Image(nsImage: icon)
-                        .resizable()
-                        .frame(width: 48, height: 48)
-                }
+                AppIconView(
+                    app: app,
+                    size: 48,
+                    rasterPointSize: CGFloat(UserPreferences.iconRasterPointSize(Double(iconSize)))
+                )
                 Text(app.name)
                     .font(.system(size: 10))
                     .foregroundStyle(.white)
@@ -117,29 +125,22 @@ struct AppGridItem: View {
             .background(.ultraThinMaterial)
             .clipShape(RoundedRectangle(cornerRadius: 12))
         }
-        // Drop support
-        .onDrop(of: [UTType.text], isTargeted: $isCurrentDropTarget) { providers in
-            guard let provider = providers.first else {
-                resetDragState()
-                return false
+        // Drop support — location-aware (Fix 2/8): normal-mode drops are
+        // deliberately ignored (classic behavior; prevents accidental reorders),
+        // edit-mode center drops merge into a folder, edge drops reorder.
+        // Folder tiles can't be dropped onto apps; they are declined below.
+        .onDrop(of: [.text], delegate: PayloadDropDelegate(
+            onEnter: { isCurrentDropTarget = true },
+            onExit: { isCurrentDropTarget = false },
+            proposal: isEditMode ? DropProposal(operation: .move) : nil,
+            onDrop: { location, providers in
+                handleDrop(at: location, providers: providers)
             }
-
-            provider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { item, _ in
-                DispatchQueue.main.async {
-                    defer { resetDragState() }
-
-                    guard let draggedIDStr = draggedIDString(from: item),
-                          let draggedID = UUID(uuidString: draggedIDStr),
-                          draggedID != app.id else { return }
-
-                    if isEditMode {
-                        store.send(.createFolder(name: "New Folder", appIDs: [draggedID, app.id]))
-                    } else {
-                        store.send(.moveApp(id: draggedID, after: app.id))
-                    }
-                }
+        ))
+        .onChange(of: hasActiveDrag) { _, isActive in
+            if !isActive {
+                isDraggingLocal = false
             }
-            return true
         }
         .onChange(of: isCurrentDropTarget) { _, newValue in
             // Reset drag state when drop target changes away
@@ -180,13 +181,7 @@ struct AppGridItem: View {
             titleVisibility: .visible
         ) {
             Button("Move to Trash", role: .destructive) {
-                do {
-                    try FileManager.default.trashItem(at: app.path, resultingItemURL: nil)
-                    store.send(.reloadApps)
-                } catch {
-                    Logger.appGrid.error("Trash failed for \(app.path.path, privacy: .private): \(error.localizedDescription, privacy: .public)")
-                    store.send(.setErrorMessage("Could not move \"\(app.name)\" to Trash. Check file permissions."))
-                }
+                store.send(.trashApp(app))
             }
             Button("Cancel", role: .cancel) {}
         }
@@ -196,5 +191,32 @@ struct AppGridItem: View {
         onDragEnd()
         isDraggingLocal = false
         isCurrentDropTarget = false
+    }
+
+    private func handleDrop(at location: CGPoint, providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first else {
+            resetDragState()
+            return false
+        }
+        // Tile width is deterministic (frame below), so the x offset alone
+        // disambiguates edge (reorder) from center (folder) — no GeometryReader.
+        let x = location.x
+        let width = iconSize + 20
+        provider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { item, _ in
+            DispatchQueue.main.async {
+                defer { resetDragState() }
+                guard isEditMode,
+                      case let .app(draggedID) = GridDragPayload.decode(item),
+                      draggedID != app.id else { return }
+                if x < width * 0.25 {
+                    store.send(.moveAppBefore(id: draggedID, before: app.id))
+                } else if x > width * 0.75 {
+                    store.send(.moveApp(id: draggedID, after: app.id))
+                } else {
+                    store.send(.createFolder(name: "New Folder", appIDs: [draggedID, app.id]))
+                }
+            }
+        }
+        return true
     }
 }

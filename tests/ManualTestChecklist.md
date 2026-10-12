@@ -8,11 +8,13 @@
 
 ### 1. 啟動應用
 ```bash
-# 重新安裝應用
-rm -rf ~/Library/Application\ Support/Launchpad
-swift build -c release && ./build-app.sh
+# Build and launch without deleting persistent preferences
+./build-app.sh
 open build/Launchpad.app
 ```
+
+**Do not remove `~/Library/Application Support/Launchpad` to reset preferences:** this app stores
+settings in `UserDefaults`. Use a separate macOS test account if you need isolated test data.
 
 ### 2. 創建測試資料夾
 - 點擊工具列的 "folder.badge.plus" 按鈕
